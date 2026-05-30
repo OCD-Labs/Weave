@@ -26,6 +26,10 @@ The backend layer handles off-chain indexing, price caching, basket performance 
 
 The AI layer is a TypeScript service that receives a natural language thesis from the frontend, reads the stock catalogue from the backend, calls the Anthropic API to generate a basket composition proposal, and returns structured JSON to the frontend for human review before any on-chain action is taken.
 
+<p align="center">
+  <img src="https://i.imgur.com/fOFTeut.png" alt="weave-sequence-diagram" />
+</p>
+
 ---
 
 ## 3. Contract Inventory
