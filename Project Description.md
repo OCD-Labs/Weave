@@ -78,6 +78,10 @@ The revenue model is a management fee on AUM, charged continuously and collected
 
 The basket contracts are written in Solidity and deployed on Robinhood Chain testnet, implementing ERC-7641 for creator revenue sharing and ERC-20 for basket tokens. A basket factory contract deploys new baskets using the ERC-1167 minimal proxy pattern and registers them in a protocol-wide registry. Chainlink Data Feeds provide real-time price feeds for all supported constituent stocks. Chainlink Automation monitors rebalancing-enabled baskets and triggers rebalancing when drift exceeds the configured threshold, funded from basket management fee revenue above a minimum AUM threshold. The DEX router handles all constituent purchases and rebalancing swaps on-chain. A lightweight backend indexer built in Go with SQLite stores basket metadata, composition history, performance history, and investor position data for fast frontend queries. The AI composition engine is a TypeScript agent that reads the Robinhood Chain catalogue metadata and Chainlink price data, runs the thesis-to-composition analysis using the Anthropic API, and returns structured proposals to the frontend. The frontend is a TypeScript web application connecting to Robinhood Chain through the user's wallet.
 
+<p align="center">
+  <img src="https://i.imgur.com/jf3vx9s.png" alt="weave-system-components-architecture" />
+</p>
+
 ---
 
 ## Why Robinhood Chain, Why Now
