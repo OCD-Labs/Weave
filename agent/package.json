@@ -1,9 +1,0 @@
-{
-  "name": "weave-agent",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "build": "cd .. && npm run build",
-    "start": "node ../dist/compose.js"
-  }
-}
