@@ -53,7 +53,7 @@ func main() {
 	go poller.Run(ctx)
 
 	// Start the HTTP API server.
-	aiBaseURL := fmt.Sprintf("http://localhost:%s", aiServicePort)
+	aiBaseURL := envOrDefault("AI_BASE_URL", fmt.Sprintf("http://localhost:%s", aiServicePort))
 	handler   := api.NewRouter(database, aiBaseURL)
 
 	srv := &http.Server{

@@ -1,0 +1,7 @@
+# Point Railway's Go backend service at this file via NIXPACKS_CONFIG_FILE=nixpacks.go.toml
+
+[phases.build]
+cmds = ["go build -o bin/weave-backend ./server/main.go"]
+
+[start]
+cmd = "./bin/weave-backend"
