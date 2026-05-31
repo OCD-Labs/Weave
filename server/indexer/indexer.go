@@ -4,15 +4,16 @@ import (
 	"context"
 	"log"
 	"math/big"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/OCD-Labs/Weave/server/db"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/OCD-Labs/Weave/server/db"
 )
 
 // Event signatures — keccak256 of the event topic string.
@@ -77,6 +78,8 @@ func (idx *Indexer) subscribe() error {
 	// Load existing basket addresses from the database so we filter their events
 	// correctly after a restart without re-indexing from genesis.
 	idx.loadBasketAddrs()
+	go idx.backfillAssets(client)
+	go idx.backfillBaskets(client)
 
 	// Build a broad filter: registry address + all known basket addresses.
 	addresses := []common.Address{idx.registryAddr}
@@ -346,6 +349,71 @@ func (idx *Indexer) loadBasketAddrs() {
 			idx.basketAddrs[common.HexToAddress(addr)] = true
 		}
 	}
+}
+
+func (idx *Indexer) newHTTPClient() (*ethclient.Client, error) {
+    // Use the HTTP RPC for log queries — WebSocket client can hang on eth_getLogs.
+    rpcURL := os.Getenv("RPC_URL")
+    if rpcURL == "" {
+        rpcURL = "https://rpc.testnet.chain.robinhood.com"
+    }
+    return ethclient.DialContext(idx.ctx, rpcURL)
+}
+
+func (idx *Indexer) backfillAssets(_ *ethclient.Client) {
+    httpClient, err := idx.newHTTPClient()
+    if err != nil {
+        log.Printf("indexer: backfill http client error: %v", err)
+        return
+    }
+    defer httpClient.Close()
+
+    deployBlock := big.NewInt(65989689)
+    query := ethereum.FilterQuery{
+        FromBlock: deployBlock,
+        Addresses: []common.Address{idx.registryAddr},
+        Topics:    [][]common.Hash{{topicAssetAdded}},
+    }
+
+    logs, err := httpClient.FilterLogs(idx.ctx, query)
+    if err != nil {
+        log.Printf("indexer: backfill assets error: %v", err)
+        return
+    }
+
+    for _, vLog := range logs {
+        idx.handleAssetAdded(vLog)
+    }
+
+    log.Printf("indexer: backfilled %d asset events", len(logs))
+}
+
+func (idx *Indexer) backfillBaskets(_ *ethclient.Client) {
+    httpClient, err := idx.newHTTPClient()
+    if err != nil {
+        log.Printf("indexer: backfill http client error: %v", err)
+        return
+    }
+    defer httpClient.Close()
+
+    deployBlock := big.NewInt(65989689)
+    query := ethereum.FilterQuery{
+        FromBlock: deployBlock,
+        Addresses: []common.Address{idx.registryAddr},
+        Topics:    [][]common.Hash{{topicBasketCreated}},
+    }
+
+    logs, err := httpClient.FilterLogs(idx.ctx, query)
+    if err != nil {
+        log.Printf("indexer: backfill baskets error: %v", err)
+        return
+    }
+
+    for _, vLog := range logs {
+        idx.handleBasketCreated(vLog)
+    }
+
+    log.Printf("indexer: backfilled %d basket events", len(logs))
 }
 
 // eventTopic computes the keccak256 topic hash for an event signature string.

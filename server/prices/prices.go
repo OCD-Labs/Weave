@@ -26,27 +26,6 @@ var latestPriceABI, _ = abi.JSON(strings.NewReader(`[{
 	"type": "function"
 }]`))
 
-// getSupportedAssetsABI is the ABI fragment for IWeaveRegistry.getSupportedAssets().
-var getSupportedAssetsABI, _ = abi.JSON(strings.NewReader(`[{
-	"inputs": [],
-	"name": "getSupportedAssets",
-	"outputs": [{
-		"components": [
-			{"internalType": "address", "name": "tokenAddress", "type": "address"},
-			{"internalType": "address", "name": "oracle",       "type": "address"},
-			{"internalType": "string",  "name": "symbol",       "type": "string"},
-			{"internalType": "string",  "name": "name",         "type": "string"},
-			{"internalType": "string",  "name": "sector",       "type": "string"},
-			{"internalType": "bool",    "name": "active",       "type": "bool"}
-		],
-		"internalType": "struct IWeaveRegistry.AssetConfig[]",
-		"name": "",
-		"type": "tuple[]"
-	}],
-	"stateMutability": "view",
-	"type": "function"
-}]`))
-
 // Poller reads oracle prices at a fixed interval and writes to price_history.
 type Poller struct {
 	rpcURL       string
@@ -90,57 +69,40 @@ func (p *Poller) poll(ctx context.Context) {
 	}
 	defer client.Close()
 
-	caller := bind.NewBoundContract(p.registryAddr, getSupportedAssetsABI, client, nil, nil)
+	type assetRow struct {
+		tokenAddr  string
+		oracleAddr string
+	}
 
-	var results []interface{}
-	err = caller.Call(&bind.CallOpts{Context: ctx}, &results, "getSupportedAssets")
+	rows, err := p.db.Query(
+		`SELECT address, oracle_address FROM supported_assets WHERE is_active = 1`,
+	)
 	if err != nil {
-		log.Printf("prices: getSupportedAssets error: %v", err)
+		log.Printf("prices: db query error: %v", err)
 		return
 	}
 
-	if len(results) == 0 {
-		return
+	var assets []assetRow
+	for rows.Next() {
+		var a assetRow
+		if err := rows.Scan(&a.tokenAddr, &a.oracleAddr); err != nil {
+			continue
+		}
+		assets = append(assets, a)
 	}
-
-	// The result is a slice of structs. Each struct has fields matching AssetConfig.
-	type assetConfig struct {
-		TokenAddress common.Address
-		Oracle       common.Address
-		Symbol       string
-		Name         string
-		Sector       string
-		Active       bool
-	}
-
-	assets, ok := results[0].([]struct {
-		TokenAddress common.Address `abi:"tokenAddress"`
-		Oracle       common.Address `abi:"oracle"`
-		Symbol       string         `abi:"symbol"`
-		Name         string         `abi:"name"`
-		Sector       string         `abi:"sector"`
-		Active       bool           `abi:"active"`
-	})
-	if !ok {
-		log.Printf("prices: unexpected type from getSupportedAssets")
-		return
-	}
+	rows.Close()
 
 	now := time.Now().Unix()
 
-	for _, asset := range assets {
-		if !asset.Active {
-			continue
-		}
-
-		price := p.readOraclePrice(ctx, client, asset.Oracle)
+	for _, a := range assets {
+		price := p.readOraclePrice(ctx, client, common.HexToAddress(a.oracleAddr))
 		if price == nil {
 			continue
 		}
 
 		_, err := p.db.Exec(
 			`INSERT INTO price_history (stock_address, price_usdg, timestamp) VALUES (?, ?, ?)`,
-			strings.ToLower(asset.TokenAddress.Hex()),
+			a.tokenAddr,
 			price.String(),
 			now,
 		)

@@ -32,6 +32,9 @@ func NewRouter(database *db.DB, aiBaseURL string) http.Handler {
 	mux.HandleFunc("GET /creator-tokens/{address}",     h.getCreatorToken)
 	mux.HandleFunc("POST /ai/compose",                  h.aiCompose)
 
+	mux.HandleFunc("GET /docs", h.serveDocs)
+	mux.HandleFunc("GET /openapi.json", h.serveOpenAPI)
+
 	return corsMiddleware(mux)
 }
 
@@ -543,4 +546,17 @@ func corsMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
 	})
+}
+
+func (h *handler) serveOpenAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(openAPISpec))
+}
+
+func (h *handler) serveDocs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(swaggerHTML))
 }
