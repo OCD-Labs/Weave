@@ -83,19 +83,19 @@ verify:
 
 .PHONY: go-deps
 go-deps:
-	go mod download
+	go mod tidy
 
 .PHONY: go-build
 go-build:
-	go build -o bin/weave-backend ./backend/...
+	go build -o bin/weave-backend ./server/main.go
 
 .PHONY: go-run
 go-run:
-	go run ./backend/main.go
+	go run ./server/main.go
 
 .PHONY: go-test
 go-test:
-	go test ./backend/...
+	go test ./server/...
 
 .PHONY: ts-install
 ts-install:
