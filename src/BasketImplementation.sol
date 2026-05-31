@@ -166,22 +166,34 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
 
         IWeaveRegistry reg = IWeaveRegistry(registry);
 
-        // Pull USDG from caller first — fail fast if they haven't approved.
         IERC20(reg.usdg()).safeTransferFrom(
             msg.sender,
             address(this),
             usdgAmount
         );
 
-        // Deduct management fee before buying anything.
         uint256 feeUsdg = _collectFee(usdgAmount, reg);
         uint256 netUsdg = usdgAmount - feeUsdg;
 
-        // Buy constituents in target-weight proportions with net USDG.
+        // Snapshot BEFORE buying so the depositor's own purchase
+        // doesn't inflate the denominator and dilute their share.
+        uint256 supplyBefore = totalSupply();
+        uint256 totalValueBefore = supplyBefore == 0 ? 0 : _totalValueUsdg(reg);
+
         _buyConstituents(netUsdg, reg);
 
-        // Mint basket tokens to receiver.
-        basketTokensMinted = _mintBasketTokens(netUsdg, receiver, reg);
+        if (supplyBefore == 0) {
+            basketTokensMinted = netUsdg * USDG_TO_TOKEN_SCALE;
+        } else {
+            // floors toward zero
+            basketTokensMinted = Math.mulDiv(
+                netUsdg,
+                supplyBefore,
+                totalValueBefore
+            );
+        }
+
+        _mint(receiver, basketTokensMinted);
 
         if (basketTokensMinted < minBasketTokensOut)
             revert InsufficientSlippage();
@@ -649,24 +661,22 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         }
     }
 
-    /// @notice Mint basket tokens to receiver based on their proportional USDG contribution.
-    function _mintBasketTokens(
+    /// @notice Mint basket tokens using supply and totalValue captured before the buy.
+    /// This prevents the depositor's own purchase from diluting their own share.
+    function _mintFromSnapshot(
         uint256 netUsdg,
-        address receiver,
-        IWeaveRegistry reg
+        uint256 supplyBefore,
+        uint256 totalValueBefore
     ) internal returns (uint256 minted) {
-        uint256 supply = totalSupply();
-
-        if (supply == 0) {
+        if (supplyBefore == 0) {
             // First depositor: 1 USDG (6 dec) → 1 basket token (18 dec).
             minted = netUsdg * USDG_TO_TOKEN_SCALE;
         } else {
-            uint256 totalValue = _totalValueUsdg(reg);
-            // proportional share of supply. floors toward zero.
-            minted = Math.mulDiv(netUsdg, supply, totalValue);
+            // Proportional share based on pre-purchase NAV. Floors toward zero.
+            minted = Math.mulDiv(netUsdg, supplyBefore, totalValueBefore);
         }
 
-        _mint(receiver, minted);
+        _mint(msg.sender == address(this) ? msg.sender : msg.sender, minted);
     }
 
     /// @notice Revert if any constituent is currently inactive in the registry.
