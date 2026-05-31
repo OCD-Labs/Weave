@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/big"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -13,20 +14,21 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 // Event signatures — keccak256 of the event topic string.
 // These must match the events emitted by the Solidity contracts exactly.
 var (
-	topicBasketCreated  = eventTopic("BasketCreated(address,address,address,string,bool)")
-	topicDeposited      = eventTopic("Deposited(address,uint256,uint256,uint256)")
-	topicRedeemed       = eventTopic("Redeemed(address,uint256,uint256,uint256)")
-	topicRebalanced     = eventTopic("Rebalanced(address)")
-	topicFeeSnapshoted  = eventTopic("RevenueSnapshoted(uint256,uint256,uint256)")
-	topicAssetAdded     = eventTopic("AssetAdded(address,string,string)")
-	topicAssetDeact     = eventTopic("AssetDeactivated(address)")
-	topicBasketSuspend  = eventTopic("Suspended()")
+	topicBasketCreated = eventTopic("BasketCreated(address,address,address,string,bool)")
+	topicDeposited     = eventTopic("Deposited(address,uint256,uint256,uint256)")
+	topicRedeemed      = eventTopic("Redeemed(address,uint256,uint256,uint256)")
+	topicRebalanced    = eventTopic("Rebalanced(address)")
+	topicFeeSnapshoted = eventTopic("RevenueSnapshoted(uint256,uint256,uint256)")
+	topicAssetAdded    = eventTopic("AssetAdded(address,string,string)")
+	topicAssetDeact    = eventTopic("AssetDeactivated(address)")
+	topicBasketSuspend = eventTopic("Suspended()")
 )
 
 // Indexer subscribes to on-chain events and writes them to SQLite.
@@ -91,7 +93,7 @@ func (idx *Indexer) subscribe() error {
 		Addresses: addresses,
 	}
 
-	logs  := make(chan types.Log)
+	logs := make(chan types.Log)
 	sub, err := client.SubscribeFilterLogs(idx.ctx, query, logs)
 	if err != nil {
 		return err
@@ -143,11 +145,11 @@ func (idx *Indexer) handleBasketCreated(vLog types.Log) {
 		return
 	}
 
-	basket       := common.HexToAddress(vLog.Topics[1].Hex())
+	basket := common.HexToAddress(vLog.Topics[1].Hex())
 	creatorToken := common.HexToAddress(vLog.Topics[2].Hex())
-	creator      := common.HexToAddress(vLog.Topics[3].Hex())
-	txHash       := vLog.TxHash.Hex()
-	timestamp    := int64(vLog.BlockNumber) // approximate; refined by price poller
+	creator := common.HexToAddress(vLog.Topics[3].Hex())
+	txHash := vLog.TxHash.Hex()
+	timestamp := int64(vLog.BlockNumber) // approximate; refined by price poller
 
 	// Decode non-indexed fields: (string name, bool rebalancingEnabled)
 	// We store empty name for now — the backend API reads name from contract state.
@@ -185,16 +187,16 @@ func (idx *Indexer) handleDeposited(vLog types.Log) {
 	}
 
 	investor := common.HexToAddress(vLog.Topics[1].Hex())
-	basket   := strings.ToLower(vLog.Address.Hex())
+	basket := strings.ToLower(vLog.Address.Hex())
 
 	// Data: (uint256 usdgAmount, uint256 basketTokensMinted, uint256 feeUsdg)
 	if len(vLog.Data) < 96 {
 		return
 	}
 
-	usdgAmount   := new(big.Int).SetBytes(vLog.Data[0:32])
+	usdgAmount := new(big.Int).SetBytes(vLog.Data[0:32])
 	tokensMinted := new(big.Int).SetBytes(vLog.Data[32:64])
-	feeUsdg      := new(big.Int).SetBytes(vLog.Data[64:96])
+	feeUsdg := new(big.Int).SetBytes(vLog.Data[64:96])
 
 	_, err := idx.db.Exec(`
 		INSERT INTO deposits
@@ -219,7 +221,7 @@ func (idx *Indexer) handleRedeemed(vLog types.Log) {
 	}
 
 	investor := common.HexToAddress(vLog.Topics[1].Hex())
-	basket   := strings.ToLower(vLog.Address.Hex())
+	basket := strings.ToLower(vLog.Address.Hex())
 
 	if len(vLog.Data) < 96 {
 		return
@@ -227,7 +229,7 @@ func (idx *Indexer) handleRedeemed(vLog types.Log) {
 
 	tokensBurned := new(big.Int).SetBytes(vLog.Data[0:32])
 	usdgReturned := new(big.Int).SetBytes(vLog.Data[32:64])
-	feeUsdg      := new(big.Int).SetBytes(vLog.Data[64:96])
+	feeUsdg := new(big.Int).SetBytes(vLog.Data[64:96])
 
 	_, err := idx.db.Exec(`
 		INSERT INTO redemptions
@@ -252,7 +254,7 @@ func (idx *Indexer) handleRebalanced(vLog types.Log) {
 	}
 
 	triggeredBy := common.HexToAddress(vLog.Topics[1].Hex())
-	basket      := strings.ToLower(vLog.Address.Hex())
+	basket := strings.ToLower(vLog.Address.Hex())
 
 	_, err := idx.db.Exec(`
 		INSERT INTO rebalances (basket_address, triggered_by, timestamp, tx_hash)
@@ -272,7 +274,7 @@ func (idx *Indexer) handleFeeSnapshot(vLog types.Log) {
 		return
 	}
 
-	basket     := strings.ToLower(vLog.Address.Hex())
+	basket := strings.ToLower(vLog.Address.Hex())
 	snapshotID := new(big.Int).SetBytes(vLog.Topics[1].Bytes()).Int64()
 
 	if len(vLog.Data) < 64 {
@@ -302,16 +304,142 @@ func (idx *Indexer) handleAssetAdded(vLog types.Log) {
 
 	token := strings.ToLower(common.HexToAddress(vLog.Topics[1].Hex()).Hex())
 
-	_, err := idx.db.Exec(`
-		INSERT OR IGNORE INTO supported_assets
-		(address, symbol, name, sector, oracle_address, is_active, added_at)
-		VALUES (?, '', '', '', '', 1, ?)`,
+	// Decode symbol and sector directly from log data.
+	decoded, err := abi.Arguments{
+		{Type: mustABIType("string")},
+		{Type: mustABIType("string")},
+	}.Unpack(vLog.Data)
+	if err != nil {
+		log.Printf("indexer: handleAssetAdded decode error: %v", err)
+		idx.db.Exec(`
+			INSERT OR IGNORE INTO supported_assets
+			(address, symbol, name, sector, oracle_address, is_active, added_at)
+			VALUES (?, '', '', '', '', 1, ?)`,
+			token, int64(vLog.BlockNumber),
+		)
+		return
+	}
+
+	symbol := decoded[0].(string)
+	sector := decoded[1].(string)
+
+	// Get oracle address and name from registry.
+	oracleAddr, name := idx.getAssetMeta(token)
+
+	_, err = idx.db.Exec(`
+			INSERT INTO supported_assets
+			(address, symbol, name, sector, oracle_address, is_active, added_at)
+			VALUES (?, ?, ?, ?, ?, 1, ?)
+			ON CONFLICT(address) DO UPDATE SET
+				symbol         = excluded.symbol,
+				name           = excluded.name,
+				sector         = excluded.sector,
+				oracle_address = excluded.oracle_address,
+				is_active      = excluded.is_active`,
 		token,
+		symbol,
+		name,
+		sector,
+		oracleAddr,
 		int64(vLog.BlockNumber),
 	)
 	if err != nil {
-		log.Printf("indexer: insert asset: %v", err)
+		log.Printf("indexer: handleAssetAdded insert error: %v", err)
+	} else {
+		log.Printf("indexer: asset indexed — %s (%s) oracle=%s", symbol, token, oracleAddr)
 	}
+}
+
+func (idx *Indexer) getAssetMeta(tokenAddr string) (oracle string, name string) {
+	httpClient, err := idx.newHTTPClient()
+	if err != nil {
+		return "", ""
+	}
+	defer httpClient.Close()
+
+	assetsABI, _ := abi.JSON(strings.NewReader(`[{
+		"inputs": [],
+		"name": "getSupportedAssets",
+		"outputs": [{
+			"components": [
+				{"internalType":"address","name":"tokenAddress",  "type":"address"},
+				{"internalType":"address","name":"chainlinkFeed", "type":"address"},
+				{"internalType":"string", "name":"symbol",        "type":"string"},
+				{"internalType":"string", "name":"name",          "type":"string"},
+				{"internalType":"string", "name":"sector",        "type":"string"},
+				{"internalType":"bool",   "name":"active",        "type":"bool"}
+			],
+			"internalType":"struct IWeaveRegistry.AssetConfig[]",
+			"name":"",
+			"type":"tuple[]"
+		}],
+		"stateMutability":"view",
+		"type":"function"
+	}]`))
+
+	data, err := httpClient.CallContract(idx.ctx, ethereum.CallMsg{
+		To:   &idx.registryAddr,
+		Data: assetsABI.Methods["getSupportedAssets"].ID,
+	}, nil)
+	if err != nil {
+		log.Printf("indexer: getAssetMeta call error: %v", err)
+		return "", ""
+	}
+
+	unpacked, err := assetsABI.Methods["getSupportedAssets"].Outputs.Unpack(data)
+	if err != nil {
+		log.Printf("indexer: getAssetMeta unpack error: %v", err)
+		return "", ""
+	}
+
+	if len(unpacked) == 0 {
+		return "", ""
+	}
+
+	items, ok := unpacked[0].([]struct {
+		TokenAddress  common.Address `abi:"tokenAddress"`
+		ChainlinkFeed common.Address `abi:"chainlinkFeed"`
+		Symbol        string         `abi:"symbol"`
+		Name          string         `abi:"name"`
+		Sector        string         `abi:"sector"`
+		Active        bool           `abi:"active"`
+	})
+	if !ok {
+		rv := reflect.ValueOf(unpacked[0])
+		if rv.Kind() != reflect.Slice {
+			return "", ""
+		}
+		for i := 0; i < rv.Len(); i++ {
+			elem := rv.Index(i)
+			if elem.Kind() == reflect.Ptr {
+				elem = elem.Elem()
+			}
+			tokenField  := elem.FieldByName("TokenAddress")
+			oracleField := elem.FieldByName("ChainlinkFeed")
+			nameField   := elem.FieldByName("Name")
+			if !tokenField.IsValid() || !oracleField.IsValid() || !nameField.IsValid() {
+				continue
+			}
+			addr, ok := tokenField.Interface().(common.Address)
+			if !ok || strings.ToLower(addr.Hex()) != tokenAddr {
+				continue
+			}
+			oracleAddrVal, ok := oracleField.Interface().(common.Address)
+			if !ok {
+				return "", ""
+			}
+			return strings.ToLower(oracleAddrVal.Hex()), nameField.String()
+		}
+		return "", ""
+	}
+
+	for _, a := range items {
+		if strings.ToLower(a.TokenAddress.Hex()) == tokenAddr {
+			return strings.ToLower(a.ChainlinkFeed.Hex()), a.Name
+		}
+	}
+
+	return "", ""
 }
 
 func (idx *Indexer) handleAssetDeactivated(vLog types.Log) {
@@ -352,73 +480,75 @@ func (idx *Indexer) loadBasketAddrs() {
 }
 
 func (idx *Indexer) newHTTPClient() (*ethclient.Client, error) {
-    // Use the HTTP RPC for log queries — WebSocket client can hang on eth_getLogs.
-    rpcURL := os.Getenv("RPC_URL")
-    if rpcURL == "" {
-        rpcURL = "https://rpc.testnet.chain.robinhood.com"
-    }
-    return ethclient.DialContext(idx.ctx, rpcURL)
+	// Use the HTTP RPC for log queries — WebSocket client can hang on eth_getLogs.
+	rpcURL := os.Getenv("RPC_URL")
+	if rpcURL == "" {
+		rpcURL = "https://rpc.testnet.chain.robinhood.com"
+	}
+	return ethclient.DialContext(idx.ctx, rpcURL)
 }
 
 func (idx *Indexer) backfillAssets(_ *ethclient.Client) {
-    httpClient, err := idx.newHTTPClient()
-    if err != nil {
-        log.Printf("indexer: backfill http client error: %v", err)
-        return
-    }
-    defer httpClient.Close()
+	httpClient, err := idx.newHTTPClient()
+	if err != nil {
+		log.Printf("indexer: backfill http client error: %v", err)
+		return
+	}
+	defer httpClient.Close()
 
-    deployBlock := big.NewInt(65989689)
-    query := ethereum.FilterQuery{
-        FromBlock: deployBlock,
-        Addresses: []common.Address{idx.registryAddr},
-        Topics:    [][]common.Hash{{topicAssetAdded}},
-    }
+	deployBlock := big.NewInt(65989689)
+	query := ethereum.FilterQuery{
+		FromBlock: deployBlock,
+		Addresses: []common.Address{idx.registryAddr},
+		Topics:    [][]common.Hash{{topicAssetAdded}},
+	}
 
-    logs, err := httpClient.FilterLogs(idx.ctx, query)
-    if err != nil {
-        log.Printf("indexer: backfill assets error: %v", err)
-        return
-    }
+	logs, err := httpClient.FilterLogs(idx.ctx, query)
+	if err != nil {
+		log.Printf("indexer: backfill assets error: %v", err)
+		return
+	}
 
-    for _, vLog := range logs {
-        idx.handleAssetAdded(vLog)
-    }
+	log.Printf("indexer: backfill found %d raw logs", len(logs))
 
-    log.Printf("indexer: backfilled %d asset events", len(logs))
+	for _, vLog := range logs {
+		idx.handleAssetAdded(vLog)
+	}
+
+	log.Printf("indexer: backfilled %d asset events", len(logs))
 }
 
 func (idx *Indexer) backfillBaskets(_ *ethclient.Client) {
-    httpClient, err := idx.newHTTPClient()
-    if err != nil {
-        log.Printf("indexer: backfill http client error: %v", err)
-        return
-    }
-    defer httpClient.Close()
+	httpClient, err := idx.newHTTPClient()
+	if err != nil {
+		log.Printf("indexer: backfill http client error: %v", err)
+		return
+	}
+	defer httpClient.Close()
 
-    deployBlock := big.NewInt(65989689)
-    query := ethereum.FilterQuery{
-        FromBlock: deployBlock,
-        Addresses: []common.Address{idx.registryAddr},
-        Topics:    [][]common.Hash{{topicBasketCreated}},
-    }
+	deployBlock := big.NewInt(65989689)
+	query := ethereum.FilterQuery{
+		FromBlock: deployBlock,
+		Addresses: []common.Address{idx.registryAddr},
+		Topics:    [][]common.Hash{{topicBasketCreated}},
+	}
 
-    logs, err := httpClient.FilterLogs(idx.ctx, query)
-    if err != nil {
-        log.Printf("indexer: backfill baskets error: %v", err)
-        return
-    }
+	logs, err := httpClient.FilterLogs(idx.ctx, query)
+	if err != nil {
+		log.Printf("indexer: backfill baskets error: %v", err)
+		return
+	}
 
-    for _, vLog := range logs {
-        idx.handleBasketCreated(vLog)
-    }
+	for _, vLog := range logs {
+		idx.handleBasketCreated(vLog)
+	}
 
-    log.Printf("indexer: backfilled %d basket events", len(logs))
+	log.Printf("indexer: backfilled %d basket events", len(logs))
 }
 
 // eventTopic computes the keccak256 topic hash for an event signature string.
 func eventTopic(sig string) common.Hash {
-	return abi.NewEvent(sig, sig, false, nil).ID
+	return crypto.Keccak256Hash([]byte(sig))
 }
 
 func boolToInt(b bool) int {
@@ -426,4 +556,12 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+func mustABIType(t string) abi.Type {
+	typ, err := abi.NewType(t, "", nil)
+	if err != nil {
+		panic(err)
+	}
+	return typ
 }
