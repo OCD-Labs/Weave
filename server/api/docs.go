@@ -1,5 +1,3 @@
-// server/api/docs.go
-
 package api
 
 // openAPISpec is the complete OpenAPI 3.0 specification for the Weave API.

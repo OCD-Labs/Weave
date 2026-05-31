@@ -1,8 +1,3 @@
-// agent/providers/openai.ts
-// OpenAI gpt-4o — set LLM_PROVIDER=openai and OPENAI_API_KEY in .env
-// Using plain fetch against the OpenAI REST API — no SDK dep needed.
-// API reference: https://platform.openai.com/docs/api-reference/chat
-
 import { AIProposal, CatalogueAsset, validateProposal, stripAndParse } from "../lib/validate";
 import { systemPrompt, userPrompt, retryNote } from "../lib/prompt";
 

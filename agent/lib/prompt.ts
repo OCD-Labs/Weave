@@ -1,5 +1,3 @@
-// agent/lib/prompt.ts
-
 import { CatalogueAsset } from "./validate";
 
 export function systemPrompt(): string {

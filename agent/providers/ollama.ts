@@ -1,7 +1,3 @@
-// agent/providers/ollama.ts
-// Free local LLM via Ollama — install at https://ollama.com then: ollama pull llama3.2
-// API docs confirmed at https://ollama.com/api — POST /api/chat, stream: false
-
 import { AIProposal, CatalogueAsset, validateProposal, stripAndParse } from "../lib/validate";
 import { systemPrompt, userPrompt, retryNote } from "../lib/prompt";
 

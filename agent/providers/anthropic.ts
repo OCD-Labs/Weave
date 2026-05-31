@@ -1,7 +1,3 @@
-// agent/providers/anthropic.ts
-// Anthropic claude-sonnet — set LLM_PROVIDER=anthropic and ANTHROPIC_API_KEY in .env
-// SDK docs: https://github.com/anthropic-ai/anthropic-sdk-typescript
-
 import Anthropic from "@anthropic-ai/sdk";
 import { AIProposal, CatalogueAsset, validateProposal, stripAndParse } from "../lib/validate";
 import { systemPrompt, userPrompt, retryNote } from "../lib/prompt";

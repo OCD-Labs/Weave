@@ -1,5 +1,3 @@
-// agent/compose.ts
-
 import express, { Request, Response } from "express";
 import dotenv from "dotenv";
 
@@ -11,8 +9,6 @@ dotenv.config();
 
 const app = express();
 app.use(express.json({ limit: "16kb" }));
-
-// ── POST /compose ─────────────────────────────────────────────────────────────
 
 app.post("/compose", async (req: Request, res: Response): Promise<void> => {
   const bodyParsed = ComposeRequestSchema.safeParse(req.body);
@@ -66,13 +62,9 @@ app.post("/compose", async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// ── GET /health ───────────────────────────────────────────────────────────────
-
 app.get("/health", (_req: Request, res: Response): void => {
   res.status(200).json({ status: "ok", service: "weave-ai-agent", provider: PROVIDER });
 });
-
-// ── Start ─────────────────────────────────────────────────────────────────────
 
 const PORT = parseInt(process.env.AI_SERVICE_PORT ?? "3001", 10);
 

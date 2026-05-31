@@ -1,5 +1,3 @@
-// agent/lib/catalogue.ts
-
 import { z } from "zod";
 import { CatalogueAsset, CatalogueAssetSchema } from "./validate";
 
