@@ -14,6 +14,7 @@ contract MockSwapRouter is IWeaveRouter {
     using SafeERC20 for IERC20;
 
     IWeaveRegistry public immutable registry;
+    address public immutable owner;
 
     // 8-decimal oracle price × this factor → 6-decimal USDG amount
     // tokenAmount (18 dec) * price (8 dec) / 1e20 = usdgAmount (6 dec)
@@ -22,9 +23,14 @@ contract MockSwapRouter is IWeaveRouter {
 
     error InsufficientOutput(uint256 got, uint256 min);
     error ZeroAmount();
+    error OnlyOwner();
+
+    event Funded(address indexed token, uint256 amount);
+    event Withdrawn(address indexed token, uint256 amount, address indexed to);
 
     constructor(address _registry) {
         registry = IWeaveRegistry(_registry);
+        owner    = msg.sender;
     }
 
     function swapExactUSDGForToken(
@@ -70,7 +76,7 @@ contract MockSwapRouter is IWeaveRouter {
 
         IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
 
-        // Route through USDG: tokenIn → USDG → tokenOut, all at oracle prices
+        // Route through USDG: tokenIn → USDG → tokenOut, all at oracle prices.
         uint256 usdgIntermediate = quoteTokenForUSDG(tokenIn, amountIn);
         amountOut = quoteUSDGForToken(tokenOut, usdgIntermediate);
 
@@ -105,12 +111,36 @@ contract MockSwapRouter is IWeaveRouter {
         usdgOut = Math.mulDiv(tokenIn, price, PRICE_SCALE);
     }
 
-    /// @notice Lets the deployer top up the router with test tokens for demos.
+    /// @notice Fund the router with a test token. Call this after deployment
+    /// for each stock token and USDG so swaps have liquidity.
     function fund(address token, uint256 amount) external {
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        emit Funded(token, amount);
     }
 
-    /// @notice Check how much of a token the router holds — useful for demo health checks.
+    /// @notice Withdraw a specific token back to owner.
+    /// Use this if deployment fails or you need your test tokens back.
+    function withdraw(address token, uint256 amount) external {
+        if (msg.sender != owner) revert OnlyOwner();
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        uint256 toSend = amount > bal ? bal : amount;
+        IERC20(token).safeTransfer(owner, toSend);
+        emit Withdrawn(token, toSend, owner);
+    }
+
+    /// @notice Withdraw ALL of every token back to owner in one call.
+    /// Pass the list of token addresses you funded. Cleans up everything at once.
+    function withdrawAll(address[] calldata tokens) external {
+        if (msg.sender != owner) revert OnlyOwner();
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            uint256 bal = IERC20(tokens[i]).balanceOf(address(this));
+            if (bal == 0) continue;
+            IERC20(tokens[i]).safeTransfer(owner, bal);
+            emit Withdrawn(tokens[i], bal, owner);
+        }
+    }
+
+    /// @notice Check how much of a token the router holds.
     function balance(address token) external view returns (uint256) {
         return IERC20(token).balanceOf(address(this));
     }

@@ -118,6 +118,44 @@ clean:
 	forge clean
 	rm -rf dist bin coverage-report lcov.info
 
+# Emergency: pull all funded tokens back from the MockSwapRouter to your wallet.
+# Usage: make router-withdraw-all
+.PHONY: router-withdraw-all
+router-withdraw-all:
+	cast send $(MOCK_SWAP_ROUTER_ADDRESS) \
+		"withdrawAll(address[])" \
+		"[$(USDG_ADDRESS),$(TSLA_ADDRESS),$(AMZN_ADDRESS),$(PLTR_ADDRESS),$(NFLX_ADDRESS),$(AMD_ADDRESS)]" \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY)
+
+# Withdraw a single token: make router-withdraw TOKEN=0x... AMOUNT=1000000000000000000
+.PHONY: router-withdraw
+router-withdraw:
+	cast send $(MOCK_SWAP_ROUTER_ADDRESS) \
+		"withdraw(address,uint256)" \
+		$(TOKEN) $(AMOUNT) \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY)
+
+# Redeem all your basket tokens from a deployed basket back to USDG.
+# Usage: make basket-redeem BASKET_ADDRESS=0x... BASKET_TOKEN_AMOUNT=<18dec amount>
+.PHONY: basket-redeem
+basket-redeem:
+	cast send $(BASKET_ADDRESS) \
+		"redeem(uint256,uint256,address)" \
+		$(BASKET_TOKEN_AMOUNT) 0 $(DEPLOYER_ADDRESS) \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY)
+
+# Claim all accumulated creator revenue from a creator token contract.
+# Usage: make creator-claim CREATOR_TOKEN_ADDRESS=0x...
+.PHONY: creator-claim
+creator-claim:
+	cast send $(CREATOR_TOKEN_ADDRESS) \
+		"claimAll()" \
+		--rpc-url $(RPC_URL) \
+		--private-key $(PRIVATE_KEY)
+
 .PHONY: env
 env:
 	@echo "CHAIN_ID  = $(CHAIN_ID)"
