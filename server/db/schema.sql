@@ -1,4 +1,3 @@
--- backend/db/schema.sql
 -- SQLite schema for the Weave backend indexer.
 -- Applied once on first startup via the Go migration runner.
 

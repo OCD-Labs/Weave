@@ -1,5 +1,3 @@
-// test/BasketImplementation.t.sol
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -113,8 +111,6 @@ contract BasketImplementationTest is Test {
         creatorToken = CreatorToken(ct);
     }
 
-    // ── Deposit ───────────────────────────────────────────────────────────────
-
     function test_deposit_mintsTokens() public {
         uint256 amount = 1_000e6;
         usdg.mint(alice, amount);
@@ -184,8 +180,6 @@ contract BasketImplementationTest is Test {
         vm.stopPrank();
     }
 
-    // ── Redeem ────────────────────────────────────────────────────────────────
-
     function test_redeem_returnsUSDG() public {
         uint256 depositAmount = 1_000e6;
         usdg.mint(alice, depositAmount);
@@ -237,8 +231,6 @@ contract BasketImplementationTest is Test {
         assertGt(returned, 0);
     }
 
-    // ── NAV ───────────────────────────────────────────────────────────────────
-
     function test_navPerToken_positivAfterDeposit() public view {
         assertGt(basket.navPerToken(), 0);
     }
@@ -257,8 +249,6 @@ contract BasketImplementationTest is Test {
         uint256 totalValue = basket.totalValueUsdg();
         assertGt(totalValue, 0);
     }
-
-    // ── Rebalancing ───────────────────────────────────────────────────────────
 
     function test_needsRebalancing_falseAtCreation() public view {
         // Freshly created basket has exact target weights.
@@ -325,8 +315,6 @@ contract BasketImplementationTest is Test {
         BasketImplementation(staticBasket).rebalance(minAmounts);
     }
 
-    // ── Multiple investors ────────────────────────────────────────────────────
-
     function test_multipleInvestors_proportionalNAV() public {
         // Start with a fresh basket so only alice and bob are holders.
         address[] memory constituents = new address[](3);
@@ -392,8 +380,6 @@ contract BasketImplementationTest is Test {
         assertEq(driftBps, 500);
         assertEq(maxD, basket.maxDrift());
     }
-
-    // ── Fuzz ──────────────────────────────────────────────────────────────────
 
     function testFuzz_deposit_tokensMintedProportional(uint256 amount) public {
         amount = bound(amount, 10e6, 1_000_000e6);

@@ -1,5 +1,3 @@
-// backend/api/api.go
-
 package api
 
 import (
@@ -41,8 +39,6 @@ type handler struct {
 	db        *db.DB
 	aiBaseURL string
 }
-
-// ── /baskets ──────────────────────────────────────────────────────────────────
 
 func (h *handler) listBaskets(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(`
@@ -191,8 +187,6 @@ func (h *handler) getBasketPerformance(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, points)
 }
 
-// ── /baskets/{address}/positions/{wallet} ─────────────────────────────────────
-
 func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 	basketAddr := strings.ToLower(r.PathValue("address"))
 	wallet     := strings.ToLower(r.PathValue("wallet"))
@@ -227,8 +221,6 @@ func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 		"netCostBasisUsdg":   costBasis.Text('f', 0),
 	})
 }
-
-// ── /catalogue ────────────────────────────────────────────────────────────────
 
 func (h *handler) getCatalogue(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(`
@@ -351,8 +343,6 @@ func (h *handler) getPrices(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, prices)
 }
 
-// ── /positions/{wallet} ───────────────────────────────────────────────────────
-
 func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 	wallet := strings.ToLower(r.PathValue("wallet"))
 
@@ -408,8 +398,6 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── /creator/{wallet} ─────────────────────────────────────────────────────────
-
 func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 	wallet := strings.ToLower(r.PathValue("wallet"))
 
@@ -448,8 +436,6 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 		"baskets":       entries,
 	})
 }
-
-// ── /creator-tokens/{address} ─────────────────────────────────────────────────
 
 func (h *handler) getCreatorToken(w http.ResponseWriter, r *http.Request) {
 	addr := strings.ToLower(r.PathValue("address"))
@@ -499,8 +485,6 @@ func (h *handler) getCreatorToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── /ai/compose ───────────────────────────────────────────────────────────────
-
 func (h *handler) aiCompose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -527,8 +511,6 @@ func (h *handler) aiCompose(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 func jsonOK(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")

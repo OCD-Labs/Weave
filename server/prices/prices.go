@@ -1,5 +1,3 @@
-// backend/prices/prices.go
-
 package prices
 
 import (

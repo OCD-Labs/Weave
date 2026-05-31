@@ -1,5 +1,3 @@
-// test/BasketFactory.t.sol
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -96,8 +94,6 @@ contract BasketFactoryTest is Test {
         usdg.approve(address(factory), type(uint256).max);
     }
 
-    // ── Happy path ────────────────────────────────────────────────────────────
-
     function test_createBasket_happyPath() public {
         (address basket, address creatorToken) = _createTestBasket();
 
@@ -133,8 +129,6 @@ contract BasketFactoryTest is Test {
         // Allow wide tolerance due to oracle pricing rounding.
         assertGt(nav, 0);
     }
-
-    // ── Validation ────────────────────────────────────────────────────────────
 
     function test_revertCreate_tooFewConstituents() public {
         address[] memory c = new address[](2);
@@ -222,8 +216,6 @@ contract BasketFactoryTest is Test {
         factory.createBasket("X","X","X", c, w, true, 5_001, INITIAL_DEPOSIT);
     }
 
-    // ── Fuzz ──────────────────────────────────────────────────────────────────
-
     function testFuzz_depositAmountScalesTokens(uint256 depositAmount) public {
         depositAmount = bound(depositAmount, 10e6, 10_000e6);
         usdg.mint(creator, depositAmount);
@@ -244,8 +236,6 @@ contract BasketFactoryTest is Test {
         assertGt(minted, 0);
         assertEq(b.totalSupply(), supply1 + minted);
     }
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
 
     function _createTestBasket() internal returns (address basket, address creatorToken) {
         vm.prank(creator);

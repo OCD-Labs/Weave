@@ -36,8 +36,6 @@ contract WeaveRegistryTest is Test {
         oracle = new MockOracle("TEST / USD", 100_00000000); // $100
     }
 
-    // ── Construction ──────────────────────────────────────────────────────────
-
     function test_constructorSetsParams() public view {
         assertEq(registry.governance(),        governance);
         assertEq(registry.usdg(),              usdg);
@@ -58,8 +56,6 @@ contract WeaveRegistryTest is Test {
         vm.expectRevert(WeaveRegistry.InvalidFeeBps.selector);
         new WeaveRegistry(governance, usdg, treasury, 1_001, 2_000, 1e8, 86400, 1e7, 20, 100);
     }
-
-    // ── Asset catalogue ───────────────────────────────────────────────────────
 
     function test_addAsset() public {
         vm.prank(governance);
@@ -159,8 +155,6 @@ contract WeaveRegistryTest is Test {
         assertEq(assets[1].symbol, "TEST2");
     }
 
-    // ── Oracle price read ─────────────────────────────────────────────────────
-
     function test_getAssetPrice() public {
         vm.prank(governance);
         registry.addAsset(IWeaveRegistry.AssetConfig({
@@ -212,8 +206,6 @@ contract WeaveRegistryTest is Test {
         registry.getAssetPrice(token);
     }
 
-    // ── Basket registry ───────────────────────────────────────────────────────
-
     function test_registerBasket() public {
         address basket       = makeAddr("basket");
         address creatorToken = makeAddr("creatorToken");
@@ -255,8 +247,6 @@ contract WeaveRegistryTest is Test {
         vm.stopPrank();
     }
 
-    // ── Governance transfer ───────────────────────────────────────────────────
-
     function test_twoStepGovernanceTransfer() public {
         address newGov = makeAddr("newGov");
 
@@ -281,8 +271,6 @@ contract WeaveRegistryTest is Test {
         registry.acceptGovernance();
     }
 
-    // ── Fee split ─────────────────────────────────────────────────────────────
-
     function test_feeSplitAlwaysSumsTo10000() public {
         vm.prank(governance);
         registry.setFeeSplit(3_000);
@@ -291,8 +279,6 @@ contract WeaveRegistryTest is Test {
         assertEq(registry.creatorShareBps(),  7_000);
         assertEq(registry.protocolShareBps() + registry.creatorShareBps(), 10_000);
     }
-
-    // ── Fuzz ──────────────────────────────────────────────────────────────────
 
     function testFuzz_managementFeeCap(uint256 feeBps) public {
         feeBps = bound(feeBps, 0, 1_000);

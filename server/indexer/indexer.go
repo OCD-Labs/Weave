@@ -1,5 +1,3 @@
-// backend/indexer/indexer.go
-
 package indexer
 
 import (

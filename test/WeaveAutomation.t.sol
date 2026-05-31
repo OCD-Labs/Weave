@@ -1,5 +1,3 @@
-// test/WeaveAutomation.t.sol
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -113,8 +111,6 @@ contract WeaveAutomationTest is Test {
         staticBasket = BasketImplementation(sb);
     }
 
-    // ── checkUpkeep ───────────────────────────────────────────────────────────
-
     function test_checkUpkeep_falseWhenNoRebalancingNeeded() public view {
         (bool needed,) = automation.checkUpkeep("");
         assertFalse(needed);
@@ -162,8 +158,6 @@ contract WeaveAutomationTest is Test {
         assertFalse(needed);
     }
 
-    // ── performUpkeep ─────────────────────────────────────────────────────────
-
     function test_performUpkeep_rebalances() public {
         oTSLA.setPrice(500_00000000);
         assertTrue(rebalBasket.needsRebalancing());
@@ -199,8 +193,6 @@ contract WeaveAutomationTest is Test {
         automation.performUpkeep(performData);
     }
 
-    // ── Governance ────────────────────────────────────────────────────────────
-
     function test_setBatchSize() public {
         vm.prank(governance);
         automation.setBatchSize(25);
@@ -218,8 +210,6 @@ contract WeaveAutomationTest is Test {
         vm.expectRevert(WeaveAutomation.InvalidBatchSize.selector);
         automation.setBatchSize(0);
     }
-
-    // ── Fuzz ──────────────────────────────────────────────────────────────────
 
     function testFuzz_checkUpkeep_batchSizeRespected(uint256 batchSize) public {
         batchSize = bound(batchSize, 1, 100);

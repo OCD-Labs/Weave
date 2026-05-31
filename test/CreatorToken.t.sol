@@ -1,5 +1,3 @@
-// test/CreatorToken.t.sol
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -38,16 +36,12 @@ contract CreatorTokenTest is Test {
         );
     }
 
-    // ── Construction ──────────────────────────────────────────────────────────
-
     function test_initialSupplyMintedToCreator() public view {
         assertEq(token.totalSupply(), TOTAL_SUPPLY);
         assertEq(token.balanceOf(creator), TOTAL_SUPPLY);
         assertEq(token.basket(), basket);
         assertEq(token.usdg(), address(usdg));
     }
-
-    // ── snapshotRevenue ───────────────────────────────────────────────────────
 
     function test_snapshotRevenue() public {
         uint256 amount = 1_000e6; // $1000 USDG
@@ -76,8 +70,6 @@ contract CreatorTokenTest is Test {
         vm.expectRevert(CreatorToken.ZeroAmount.selector);
         token.snapshotRevenue(0);
     }
-
-    // ── claimableRevenue ──────────────────────────────────────────────────────
 
     function test_claimableRevenue_fullSupplyHolder() public {
         uint256 amount = 1_000e6;
@@ -116,8 +108,6 @@ contract CreatorTokenTest is Test {
         // Total claimed never exceeds snapshot amount.
         assertLe(creatorClaimable + aliceClaimable, amount);
     }
-
-    // ── claim ─────────────────────────────────────────────────────────────────
 
     function test_claim() public {
         uint256 amount = 1_000e6;
@@ -170,8 +160,6 @@ contract CreatorTokenTest is Test {
         token.claim(99);
     }
 
-    // ── claimAll ──────────────────────────────────────────────────────────────
-
     function test_claimAll_multipleSnapshots() public {
         uint256 perSnap = 500e6;
 
@@ -200,8 +188,6 @@ contract CreatorTokenTest is Test {
         vm.expectRevert(CreatorToken.NothingToClaim.selector);
         token.claimAll();
     }
-
-    // ── Transfer mid-snapshot ownership ──────────────────────────────────────
 
     function test_transferAfterSnapshot_doesNotAffectPastClaim() public {
         uint256 amount = 1_000e6;
@@ -251,8 +237,6 @@ contract CreatorTokenTest is Test {
         assertApproxEqAbs(token.claimableRevenue(alice, 1), 500e6, 1);
     }
 
-    // ── Burn ─────────────────────────────────────────────────────────────────
-
     function test_burn_redeemsProportion() public {
         // Fund the revenue pool with some USDG.
         uint256 poolAmount = 1_000e6;
@@ -282,8 +266,6 @@ contract CreatorTokenTest is Test {
         assertEq(usdg.balanceOf(creator), before + expectedRedeem);
         assertEq(token.totalSupply(), TOTAL_SUPPLY - burnAmount);
     }
-
-    // ── Fuzz ──────────────────────────────────────────────────────────────────
 
     function testFuzz_claimableNeverExceedsSnapshot(
         uint256 transferAmount,
