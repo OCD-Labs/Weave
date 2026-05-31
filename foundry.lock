@@ -1,0 +1,14 @@
+{
+  "lib/chainlink": {
+    "tag": {
+      "name": "v2.48.0",
+      "rev": "9506f81af7f3a7f83d55f5f34a48183fddf90a4b"
+    }
+  },
+  "lib/openzeppelin-contracts": {
+    "tag": {
+      "name": "v5.6.1",
+      "rev": "5fd1781b1454fd1ef8e722282f86f9293cacf256"
+    }
+  }
+}

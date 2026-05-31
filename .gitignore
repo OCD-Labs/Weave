@@ -1,0 +1,29 @@
+# Foundry
+out/
+cache/
+.gas-snapshot
+broadcast/
+
+# Environment
+.env
+
+# Go
+bin/
+*.test
+
+# Node / TypeScript
+node_modules/
+dist/
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# Coverage
+lcov.info
+coverage-report/
+
+# OS
+.DS_Store
+Thumbs.db
