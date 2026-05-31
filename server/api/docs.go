@@ -17,6 +17,10 @@ const openAPISpec = `{
   },
   "servers": [
     {
+      "url": "https://weave.up.railway.app",
+      "description": "Production"
+    },
+    {
       "url": "http://localhost:8080",
       "description": "Local development"
     }
