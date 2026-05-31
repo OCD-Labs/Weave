@@ -721,6 +721,15 @@ POST /ai/compose
   This endpoint calls the AI composition engine and returns its proposal.
   The on-chain basket is NOT created here. The frontend uses this response
   to populate the basket creation form for human review before submission.
+
+GET /positions/:walletAddress
+  Computes portfolio summary from deposit/redemption event history + current NAV data.
+  Returns PortfolioSummary as defined in section 5.1.
+
+GET /creator/:walletAddress
+  Returns all baskets created by the wallet, creator token balances,
+  unclaimed snapshots, and revenue history.
+  Returns CreatorDashboard as defined in section 6.1.
 ```
 
 ---
