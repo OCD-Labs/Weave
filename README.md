@@ -4,7 +4,7 @@
 > 
 > **Team:** Yemi (Ikeh Chukwuka Favour) — OCD Labs
 
-Weave lets anyone compose a thematic basket of tokenized stocks from Robinhood Chain's catalogue, publish it as a single investable onchain instrument, and earn a continuous share of the revenue that basket generates for as long as other investors hold it. Investors get instant diversified exposure to any equity theme through a single token that rebalances itself automatically, usable anywhere in DeFi as collateral or a transfer of value.
+Weave lets anyone compose a thematic basket of tokenized stocks from Robinhood Chain's catalogue, publish it as a single investable onchain instrument, and earn a continuous share of the revenue that basket generates for as long as other investors hold it. Investors get instant diversified exposure to any equity theme through a single token that rebalances itself automatically, usable anywhere in DeFi as collateral or a transfer of value. See [project description](./docs/ProjectDescription.md) for more detailed information
 
 ---
 
