@@ -1,0 +1,30 @@
+{
+  "type": "erc8004/registration/v1",
+  "name": "Weave AI Composition Agent",
+  "description": "AI-powered thematic equity basket composition engine for the Weave onchain index protocol on Robinhood Chain. Receives a natural language investment thesis, reads the full tokenized stock catalogue from Robinhood Chain, and returns a structured basket proposal with constituent weights, rationale, and risk notes.",
+  "image": "https://i.imgur.com/jf3vx9s.png",
+  "services": [
+    {
+      "type": "https",
+      "url": "https://weave-agent.up.railway.app",
+      "description": "POST /compose with a thesis string to receive a basket proposal"
+    },
+    {
+      "type": "api",
+      "url": "https://weave.up.railway.app/docs",
+      "description": "Full Weave protocol API documentation"
+    }
+  ],
+  "registrations": [],
+  "supportedTrust": ["reputation"],
+  "version": "1.0.0",
+  "protocol": "Weave Onchain Index Protocol",
+  "chain": "Robinhood Chain Testnet — Chain ID 46630",
+  "capabilities": [
+    "equity-basket-composition",
+    "natural-language-thesis-parsing",
+    "tokenized-stock-catalogue-research",
+    "constituent-weight-optimization",
+    "investment-rationale-generation"
+  ]
+}
