@@ -95,7 +95,12 @@ go-run:
 
 .PHONY: go-test
 go-test:
-	go test ./server/...
+	cd server && go test ./... -v -count=1
+
+.PHONY: go-fuzz
+go-fuzz:
+	cd server && go test ./indexer -fuzz=FuzzDecodeAssetAddedData -fuzztime=30s
+	cd server && go test ./indexer -fuzz=FuzzDecodeBigIntFromLogData -fuzztime=30s
 
 .PHONY: ts-install
 ts-install:
@@ -112,6 +117,10 @@ ts-dev:
 .PHONY: ts-typecheck
 ts-typecheck:
 	npm run typecheck
+
+.PHONY: ts-test
+ts-test:
+	npm test
 
 .PHONY: clean
 clean:
