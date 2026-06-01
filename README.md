@@ -225,6 +225,19 @@ The backend starts at `http://localhost:8080`. Interactive API docs are at `http
 
 The agent is a TypeScript Express service that receives a natural language investment thesis, reads the stock catalogue from the Go backend, calls an LLM, validates the response against strict weight rules, and returns a structured JSON proposal.
 
+### ERC-8004 Agent Identity
+
+The Weave AI composition agent is registered on the ERC-8004 Identity Registry on Arbitrum Sepolia,
+giving it a permanent verifiable onchain identity.
+
+| Field | Value |
+|---|---|
+| Agent ID | 188 |
+| Registry | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
+| Registration TX | `0x5c16ecdf347311ebb438883e9bb1f1083da8fc09c79679ead618284b23ecd8f5` |
+| Agent Card | `https://raw.githubusercontent.com/OCD-Labs/Weave/main/agent/agent-card.json` |
+| Explorer | [View on 8004scan](https://testnet.8004scan.io/agents/arbitrum-sepolia/188) |
+
 ### Provider Architecture
 
 The agent uses a clean provider abstraction. Switching LLM providers requires changing one environment variable — zero code changes:

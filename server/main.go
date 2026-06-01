@@ -54,7 +54,8 @@ func main() {
 
 	// Start the HTTP API server.
 	aiBaseURL := envOrDefault("AI_BASE_URL", fmt.Sprintf("http://localhost:%s", aiServicePort))
-	handler   := api.NewRouter(database, aiBaseURL)
+	agentAPIKey := os.Getenv("AGENT_API_KEY")
+	handler   := api.NewRouter(database, aiBaseURL, agentAPIKey)
 
 	srv := &http.Server{
 		Addr:         ":" + apiPort,

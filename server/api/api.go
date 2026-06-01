@@ -15,10 +15,10 @@ import (
 )
 
 // NewRouter wires all HTTP routes and returns the handler.
-func NewRouter(database *db.DB, aiBaseURL string) http.Handler {
+func NewRouter(database *db.DB, aiBaseURL string, agentAPIKey string) http.Handler {
 	mux := http.NewServeMux()
 
-	h := &handler{db: database, aiBaseURL: aiBaseURL}
+	h := &handler{db: database, aiBaseURL: aiBaseURL, agentAPIKey: agentAPIKey}
 
 	mux.HandleFunc("GET /baskets",                       h.listBaskets)
 	mux.HandleFunc("GET /baskets/{address}",             h.getBasket)
@@ -39,8 +39,9 @@ func NewRouter(database *db.DB, aiBaseURL string) http.Handler {
 }
 
 type handler struct {
-	db        *db.DB
-	aiBaseURL string
+	db          *db.DB
+	aiBaseURL   string
+	agentAPIKey string
 }
 
 func (h *handler) listBaskets(w http.ResponseWriter, r *http.Request) {
@@ -489,20 +490,27 @@ func (h *handler) getCreatorToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) aiCompose(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
 	if err != nil {
 		jsonError(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
-	// Proxy the request to the TypeScript AI service.
 	aiURL := h.aiBaseURL + "/compose"
-	resp, err := http.Post(aiURL, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, aiURL, bytes.NewReader(body))
+	if err != nil {
+		jsonError(w, "ai service error", http.StatusServiceUnavailable)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Forward API key to agent service if configured
+	if h.agentAPIKey != "" {
+		req.Header.Set("x-api-key", h.agentAPIKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("api: ai service error: %v", err)
 		jsonError(w, "ai service unavailable", http.StatusServiceUnavailable)

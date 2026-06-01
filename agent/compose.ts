@@ -10,6 +10,22 @@ dotenv.config();
 const app = express();
 app.use(express.json({ limit: "16kb" }));
 
+app.use((req: Request, res: Response, next) => {
+  if (req.path === '/health') return next()
+
+  const key = req.headers['x-api-key'] ?? req.headers['authorization']?.replace('Bearer ', '')
+  const expected = process.env.AGENT_API_KEY
+
+  if (!expected) return next()
+
+  if (key !== expected) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  next()
+})
+
 app.post("/compose", async (req: Request, res: Response): Promise<void> => {
   const bodyParsed = ComposeRequestSchema.safeParse(req.body);
   if (!bodyParsed.success) {
