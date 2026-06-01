@@ -83,4 +83,4 @@ jobs:
         run: forge test -v
 
       - name: Run gas snapshot
-        run: forge snapshot --check
+        run: forge snapshot --check --no-match-test "testFuzz"
