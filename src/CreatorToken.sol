@@ -35,16 +35,8 @@ contract CreatorToken is ICreatorToken, ERC20, ReentrancyGuard {
     /// @notice snapshotId → snapshot data
     mapping(uint256 => Snapshot) private _snapshots;
 
-    /// @notice holder → snapshotId → balance at that snapshot's block
-    /// Populated lazily on first claim attempt to save gas on every transfer.
-    mapping(address => mapping(uint256 => uint256)) private _balanceAtSnapshot;
-
     /// @notice holder → snapshotId → whether they already claimed this snapshot
     mapping(address => mapping(uint256 => bool)) private _claimed;
-
-    /// @notice holder → the last snapshotId for which we recorded their balance.
-    /// Used to efficiently find which snapshots a holder needs to catch up on.
-    mapping(address => uint256) private _lastRecordedSnapshot;
 
     /// @notice Checkpoint struct for tracking balance history.
     struct Checkpoint {
@@ -61,6 +53,7 @@ contract CreatorToken is ICreatorToken, ERC20, ReentrancyGuard {
     error ZeroAmount();
     error NothingToClaim();
     error InsufficientBalance(uint256 requested, uint256 available);
+    error ZeroAddress();
 
     event RevenueSnapshoted(uint256 indexed snapshotId, uint256 usdgAmount, uint256 blockNumber);
     event RevenueClaimed(address indexed account, uint256 indexed snapshotId, uint256 usdgAmount);
@@ -78,6 +71,9 @@ contract CreatorToken is ICreatorToken, ERC20, ReentrancyGuard {
         string memory _name,
         string memory _symbol
     ) ERC20(_name, _symbol) {
+        if (_basket == address(0)) revert ZeroAddress();
+        if (_usdg   == address(0)) revert ZeroAddress();
+        
         basket = _basket;
         usdg   = _usdg;
 

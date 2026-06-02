@@ -6,13 +6,16 @@ import {WeaveRegistry}        from "../src/WeaveRegistry.sol";
 import {BasketImplementation} from "../src/BasketImplementation.sol";
 import {BasketFactory}        from "../src/BasketFactory.sol";
 import {WeaveAutomation}      from "../src/WeaveAutomation.sol";
-import {MockSwapRouter}       from "../src/MockSwapRouter.sol";
-import {MockOracle}           from "../src/MockOracle.sol";
+import {SwapRouter}           from "../src/SwapRouter.sol";
+import {OracleAdapter}        from "../src/OracleAdapter.sol";
 import {IWeaveRegistry}       from "../src/interfaces/IWeaveRegistry.sol";
 
 /// @notice Full deployment sequence for Weave on Robinhood Chain testnet.
 /// Run with: make deploy
-/// Verify each contract with: make verify ADDR=0x... NAME=src/Foo.sol:Foo
+/// Prices are read from environment variables at deploy time so they are
+/// never stale hardcoded constants. Set these in .env before deploying:
+///   TSLA_PRICE_8DEC, AMZN_PRICE_8DEC, PLTR_PRICE_8DEC, NFLX_PRICE_8DEC, AMD_PRICE_8DEC
+/// Each value is the price in 8-decimal USD (e.g. TSLA at $415.55 = 41555000000).
 contract DeployWeave is Script {
 
     // Source: https://docs.robinhood.com/chain/contracts
@@ -23,18 +26,17 @@ contract DeployWeave is Script {
     address constant NFLX = 0x3b8262A63d25f0477c4DDE23F83cfe22Cb768C93;
     address constant AMD  = 0x71178BAc73cBeb415514eB542a8995b82669778d;
 
-    // ── Initial oracle prices (8-decimal USD, matching Chainlink convention) ──
-    // These are approximate prices at time of writing — update before deployment.
-
-    int256 constant TSLA_PRICE = 34200_00000000;   // $342.00
-    int256 constant AMZN_PRICE = 20500_00000000;   // $205.00
-    int256 constant PLTR_PRICE = 12800000000;       // $128.00
-    int256 constant NFLX_PRICE = 123000000000;      // $1230.00 — note: adjust to current
-    int256 constant AMD_PRICE  = 11000000000;       // $110.00
-
     function run() external {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address deployer    = vm.addr(deployerKey);
+
+        // Read prices from env — never hardcode. Set in .env before deploying.
+        // Format: 8-decimal USD integer. TSLA at $415.55 → 41555000000.
+        int256 tslaPrice = int256(vm.envUint("TSLA_PRICE_8DEC"));
+        int256 amznPrice = int256(vm.envUint("AMZN_PRICE_8DEC"));
+        int256 pltrPrice = int256(vm.envUint("PLTR_PRICE_8DEC"));
+        int256 nflxPrice = int256(vm.envUint("NFLX_PRICE_8DEC"));
+        int256 amdPrice  = int256(vm.envUint("AMD_PRICE_8DEC"));
 
         vm.startBroadcast(deployerKey);
 
@@ -45,31 +47,31 @@ contract DeployWeave is Script {
             50,                 // managementFeeBps: 0.5%
             2_000,              // protocolShareBps: 20% of fee to protocol
             100_000_000,        // minAUMForAutomation: $100 USDG (6 dec)
-            86_400,             // oracleStalenessSecs: 24 hours — MockOracle always fresh
+            86_400,             // oracleStalenessSecs: 24 hours — OracleAdapter always fresh
             10_000_000,         // minFirstDepositUsdg: $10 USDG (6 dec)
             20,                 // maxConstituents
-            100                 // minWeightBps: 1%
+            100,                // minWeightBps: 1%
+            1_000_000,          // minRebalanceTradeSizeUsdg: $1 USDG (6 dec)
+            100                 // maxSwapSlippageBps: 1%
         );
         console.log("WeaveRegistry:       ", address(registry));
 
-        // Real Chainlink feed addresses for Robinhood Chain testnet are not yet
-        // published. MockOracles implement IWeaveOracle and can be swapped for
-        // real feeds via registry.addAsset() once Chainlink publishes addresses.
+        // OracleAdapter implements IWeaveOracle with the full Chainlink return shape.
+        // On mainnet, replace with direct Chainlink aggregator addresses in addAsset().
+        OracleAdapter oracleTSLA = new OracleAdapter("TSLA / USD", tslaPrice);
+        OracleAdapter oracleAMZN = new OracleAdapter("AMZN / USD", amznPrice);
+        OracleAdapter oraclePLTR = new OracleAdapter("PLTR / USD", pltrPrice);
+        OracleAdapter oracleNFLX = new OracleAdapter("NFLX / USD", nflxPrice);
+        OracleAdapter oracleAMD  = new OracleAdapter("AMD / USD",  amdPrice);
 
-        MockOracle oracleTSLA = new MockOracle("TSLA / USD", TSLA_PRICE);
-        MockOracle oracleAMZN = new MockOracle("AMZN / USD", AMZN_PRICE);
-        MockOracle oraclePLTR = new MockOracle("PLTR / USD", PLTR_PRICE);
-        MockOracle oracleNFLX = new MockOracle("NFLX / USD", NFLX_PRICE);
-        MockOracle oracleAMD  = new MockOracle("AMD / USD",  AMD_PRICE);
+        console.log("OracleAdapter TSLA:  ", address(oracleTSLA));
+        console.log("OracleAdapter AMZN:  ", address(oracleAMZN));
+        console.log("OracleAdapter PLTR:  ", address(oraclePLTR));
+        console.log("OracleAdapter NFLX:  ", address(oracleNFLX));
+        console.log("OracleAdapter AMD:   ", address(oracleAMD));
 
-        console.log("MockOracle TSLA:     ", address(oracleTSLA));
-        console.log("MockOracle AMZN:     ", address(oracleAMZN));
-        console.log("MockOracle PLTR:     ", address(oraclePLTR));
-        console.log("MockOracle NFLX:     ", address(oracleNFLX));
-        console.log("MockOracle AMD:      ", address(oracleAMD));
-
-        MockSwapRouter swapRouter = new MockSwapRouter(address(registry));
-        console.log("MockSwapRouter:      ", address(swapRouter));
+        SwapRouter swapRouter = new SwapRouter(address(registry));
+        console.log("SwapRouter:          ", address(swapRouter));
 
         BasketImplementation implementation = new BasketImplementation();
         console.log("BasketImplementation:", address(implementation));
@@ -138,11 +140,11 @@ contract DeployWeave is Script {
         vm.stopBroadcast();
 
         console.log("\n--- Blockscout verification commands ---");
-        console.log("make verify ADDR=%s NAME=src/WeaveRegistry.sol:WeaveRegistry",        address(registry));
-        console.log("make verify ADDR=%s NAME=src/MockSwapRouter.sol:MockSwapRouter",      address(swapRouter));
+        console.log("make verify ADDR=%s NAME=src/WeaveRegistry.sol:WeaveRegistry",              address(registry));
+        console.log("make verify ADDR=%s NAME=src/SwapRouter.sol:SwapRouter",                    address(swapRouter));
         console.log("make verify ADDR=%s NAME=src/BasketImplementation.sol:BasketImplementation", address(implementation));
-        console.log("make verify ADDR=%s NAME=src/BasketFactory.sol:BasketFactory",        address(factory));
-        console.log("make verify ADDR=%s NAME=src/WeaveAutomation.sol:WeaveAutomation",    address(automation));
-        console.log("make verify ADDR=%s NAME=src/MockOracle.sol:MockOracle (TSLA)",       address(oracleTSLA));
+        console.log("make verify ADDR=%s NAME=src/BasketFactory.sol:BasketFactory",              address(factory));
+        console.log("make verify ADDR=%s NAME=src/WeaveAutomation.sol:WeaveAutomation",          address(automation));
+        console.log("make verify ADDR=%s NAME=src/OracleAdapter.sol:OracleAdapter (TSLA)",       address(oracleTSLA));
     }
 }

@@ -5,11 +5,11 @@ import {Test}                 from "forge-std/Test.sol";
 import {WeaveRegistry}        from "../src/WeaveRegistry.sol";
 import {BasketImplementation} from "../src/BasketImplementation.sol";
 import {BasketFactory}        from "../src/BasketFactory.sol";
-import {MockSwapRouter}       from "../src/MockSwapRouter.sol";
-import {MockOracle}           from "../src/MockOracle.sol";
+import {SwapRouter}           from "../src/SwapRouter.sol";
+import {OracleAdapter}        from "../src/OracleAdapter.sol";
 import {IWeaveRegistry}       from "../src/interfaces/IWeaveRegistry.sol";
 import {ERC20}                from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {IBasketFactory}        from "../src/interfaces/IBasketFactory.sol";
+import {IBasketFactory}       from "../src/interfaces/IBasketFactory.sol";
 
 contract MockToken is ERC20 {
     constructor(string memory sym) ERC20(sym, sym) {}
@@ -21,25 +21,24 @@ contract BasketFactoryTest is Test {
     WeaveRegistry        registry;
     BasketImplementation impl;
     BasketFactory        factory;
-    MockSwapRouter       router;
+    SwapRouter           router;
     MockToken            usdg;
 
     address governance = makeAddr("governance");
     address creator    = makeAddr("creator");
     address treasury   = makeAddr("treasury");
 
-    // Five stock tokens matching testnet addresses in spirit.
     MockToken tsla;
     MockToken amzn;
     MockToken pltr;
     MockToken nflx;
     MockToken amd;
 
-    MockOracle oTSLA;
-    MockOracle oAMZN;
-    MockOracle oPLTR;
-    MockOracle oNFLX;
-    MockOracle oAMD;
+    OracleAdapter oTSLA;
+    OracleAdapter oAMZN;
+    OracleAdapter oPLTR;
+    OracleAdapter oNFLX;
+    OracleAdapter oAMD;
 
     uint256 constant INITIAL_DEPOSIT = 100e6; // $100 USDG
 
@@ -51,44 +50,49 @@ contract BasketFactoryTest is Test {
         nflx = new MockToken("NFLX");
         amd  = new MockToken("AMD");
 
-        // $342, $205, $128, $1230, $110
-        oTSLA = new MockOracle("TSLA/USD", 342_00000000);
-        oAMZN = new MockOracle("AMZN/USD", 205_00000000);
-        oPLTR = new MockOracle("PLTR/USD", 128_00000000);
-        oNFLX = new MockOracle("NFLX/USD", 1230_00000000);
-        oAMD  = new MockOracle("AMD/USD",  110_00000000);
+        // Current market prices — 8-decimal USD
+        oTSLA = new OracleAdapter("TSLA/USD", 41555000000);  // $415.55
+        oAMZN = new OracleAdapter("AMZN/USD", 26206000000);  // $262.06
+        oPLTR = new OracleAdapter("PLTR/USD", 15815000000);  // $158.15
+        oNFLX = new OracleAdapter("NFLX/USD", 8585000000);   // $85.85
+        oAMD  = new OracleAdapter("AMD/USD",  49701000000);  // $497.01
 
         vm.startPrank(governance);
         registry = new WeaveRegistry(
             governance, address(usdg), treasury,
-            50, 2_000, 50e6, 86_400, 10e6, 20, 100
+            50,          // managementFeeBps
+            2_000,       // protocolShareBps
+            50e6,        // minAUMForAutomation
+            86_400,      // oracleStalenessSecs
+            10e6,        // minFirstDepositUsdg
+            20,          // maxConstituents
+            100,         // minWeightBps
+            1_000_000,   // minRebalanceTradeSizeUsdg: $1
+            100          // maxSwapSlippageBps: 1%
         );
 
         impl    = new BasketImplementation();
         factory = new BasketFactory(address(registry), address(impl));
-        router  = new MockSwapRouter(address(registry));
+        router  = new SwapRouter(address(registry));
 
         registry.setBasketFactory(address(factory));
         registry.setSwapRouter(address(router));
 
-        _addAsset(address(tsla), address(oTSLA), "TSLA", "Tesla",   "Consumer Discretionary");
-        _addAsset(address(amzn), address(oAMZN), "AMZN", "Amazon",  "Consumer Discretionary");
-        _addAsset(address(pltr), address(oPLTR), "PLTR", "Palantir","Technology");
-        _addAsset(address(nflx), address(oNFLX), "NFLX", "Netflix", "Communication Services");
-        _addAsset(address(amd),  address(oAMD),  "AMD",  "AMD",     "Technology");
+        _addAsset(address(tsla), address(oTSLA), "TSLA", "Tesla",    "Consumer Discretionary");
+        _addAsset(address(amzn), address(oAMZN), "AMZN", "Amazon",   "Consumer Discretionary");
+        _addAsset(address(pltr), address(oPLTR), "PLTR", "Palantir", "Technology");
+        _addAsset(address(nflx), address(oNFLX), "NFLX", "Netflix",  "Communication Services");
+        _addAsset(address(amd),  address(oAMD),  "AMD",  "AMD",      "Technology");
         vm.stopPrank();
 
-        // Fund router with stock tokens so swaps succeed.
+        // Fund router treasury so swaps succeed.
         tsla.mint(address(router), 1_000e18);
         amzn.mint(address(router), 1_000e18);
         pltr.mint(address(router), 1_000e18);
         nflx.mint(address(router), 1_000e18);
         amd.mint(address(router),  1_000e18);
-
-        // Fund router with USDG for reverse swaps.
         usdg.mint(address(router), 1_000_000e6);
 
-        // Fund creator with USDG.
         usdg.mint(creator, 10_000e6);
         vm.prank(creator);
         usdg.approve(address(factory), type(uint256).max);
@@ -101,7 +105,6 @@ contract BasketFactoryTest is Test {
         assertEq(registry.basketMeta(basket).creatorToken, creatorToken);
         assertEq(registry.basketMeta(basket).creator,      creator);
 
-        // Creator received basket tokens from the initial deposit.
         assertGt(BasketImplementation(basket).balanceOf(creator), 0);
     }
 
@@ -125,8 +128,6 @@ contract BasketFactoryTest is Test {
         BasketImplementation b = BasketImplementation(basket);
         uint256 nav = b.navPerToken();
 
-        // NAV per token should be approximately 1e12 (1 USDG = 1 basket token initial price).
-        // Allow wide tolerance due to oracle pricing rounding.
         assertGt(nav, 0);
     }
 
@@ -144,7 +145,7 @@ contract BasketFactoryTest is Test {
     function test_revertCreate_weightSumInvalid() public {
         address[] memory c = _defaultConstituents();
         uint256[] memory w = _defaultWeights();
-        w[0] += 1; // push sum to 10_001
+        w[0] += 1;
 
         vm.prank(creator);
         vm.expectRevert(abi.encodeWithSelector(BasketFactory.WeightSumInvalid.selector, 10_001));
@@ -154,9 +155,8 @@ contract BasketFactoryTest is Test {
     function test_revertCreate_weightTooLow() public {
         address[] memory c = _defaultConstituents();
         uint256[] memory w = _defaultWeights();
-        // Set first weight below minWeightBps (100).
         w[0] = 50;
-        w[1] += 50; // keep sum at 10_000
+        w[1] += 50;
 
         vm.prank(creator);
         vm.expectRevert(abi.encodeWithSelector(BasketFactory.WeightTooLow.selector, c[0], 50));
@@ -179,7 +179,7 @@ contract BasketFactoryTest is Test {
         address[] memory c = new address[](3);
         uint256[] memory w = new uint256[](3);
         c[0] = address(tsla); w[0] = 4_000;
-        c[1] = address(tsla); w[1] = 3_000; // duplicate
+        c[1] = address(tsla); w[1] = 3_000;
         c[2] = address(amzn); w[2] = 3_000;
 
         vm.prank(creator);
@@ -257,11 +257,11 @@ contract BasketFactoryTest is Test {
 
     function _defaultWeights() internal pure returns (uint256[] memory w) {
         w = new uint256[](5);
-        w[0] = 2_500; // 25%
-        w[1] = 2_500; // 25%
-        w[2] = 2_000; // 20%
-        w[3] = 2_000; // 20%
-        w[4] = 1_000; // 10%
+        w[0] = 2_500;
+        w[1] = 2_500;
+        w[2] = 2_000;
+        w[3] = 2_000;
+        w[4] = 1_000;
     }
 
     function _addAsset(
