@@ -113,8 +113,18 @@ contract BasketFactoryTest is Test {
         uint256[] memory weights      = _defaultWeights();
 
         vm.prank(creator);
-        vm.expectEmit(false, false, true, false);
-        emit IBasketFactory.BasketCreated(address(0), address(0), creator, "Test Basket", false);
+        vm.expectEmit(false, false, true, true);
+        emit IBasketFactory.BasketCreated(
+            address(0),
+            address(0),
+            creator,
+            "Test Basket",
+            "TBASKET",
+            "A test thesis",
+            constituents,
+            weights,
+            false
+        );
 
         factory.createBasket(
             "Test Basket", "TBASKET", "A test thesis",

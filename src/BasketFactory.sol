@@ -138,6 +138,16 @@ contract BasketFactory is IBasketFactory {
             msg.sender
         );
 
-        emit BasketCreated(basket, creatorToken, msg.sender, name, rebalancingEnabled);
+        emit BasketCreated(
+            basket,
+            creatorToken,
+            msg.sender,
+            name,
+            symbol,
+            thesis,
+            constituents,
+            targetWeightsBps,
+            rebalancingEnabled
+        );
     }
 }

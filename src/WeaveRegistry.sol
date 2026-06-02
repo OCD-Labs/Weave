@@ -66,7 +66,13 @@ contract WeaveRegistry is IWeaveRegistry {
 
     event GovernanceNominated(address indexed nominee);
     event GovernanceAccepted(address indexed newGovernance);
-    event AssetAdded(address indexed token, string symbol, string sector);
+    event AssetAdded(
+        address indexed token,
+        string  symbol,
+        string  name,
+        string  sector,
+        address oracle
+    );
     event AssetDeactivated(address indexed token);
     event BasketRegistered(
         address indexed basket,
@@ -157,7 +163,13 @@ contract WeaveRegistry is IWeaveRegistry {
         _assets[config.tokenAddress] = config;
         _supportedAssets.push(config.tokenAddress);
 
-        emit AssetAdded(config.tokenAddress, config.symbol, config.sector);
+        emit AssetAdded(
+            config.tokenAddress,
+            config.symbol,
+            config.name,
+            config.sector,
+            config.oracle
+        );
     }
 
     function deactivateAsset(address token) external override onlyGovernance {
@@ -210,7 +222,7 @@ contract WeaveRegistry is IWeaveRegistry {
             /* startedAt */,
             uint256 _updatedAt,
             /* answeredInRound */
-        ) = IWeaveOracle(cfg.oracle).latestPrice();
+        ) = IWeaveOracle(cfg.oracle).latestRoundData();
 
         if (answer <= 0) revert NegativePrice(token);
 
