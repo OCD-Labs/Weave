@@ -6,8 +6,8 @@ import {WeaveRegistry}        from "../src/WeaveRegistry.sol";
 import {BasketImplementation} from "../src/BasketImplementation.sol";
 import {BasketFactory}        from "../src/BasketFactory.sol";
 import {CreatorToken}         from "../src/CreatorToken.sol";
-import {MockSwapRouter}       from "../src/MockSwapRouter.sol";
-import {MockOracle}           from "../src/MockOracle.sol";
+import {SwapRouter}           from "../src/SwapRouter.sol";
+import {OracleAdapter}        from "../src/OracleAdapter.sol";
 import {IWeaveRegistry}       from "../src/interfaces/IWeaveRegistry.sol";
 import {ERC20}                from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Math}                 from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -23,16 +23,16 @@ contract BasketImplementationTest is Test {
     WeaveRegistry        registry;
     BasketImplementation impl;
     BasketFactory        factory;
-    MockSwapRouter       router;
+    SwapRouter           router;
 
     MockERC20 usdg;
     MockERC20 tsla;
     MockERC20 amzn;
     MockERC20 pltr;
 
-    MockOracle oTSLA;
-    MockOracle oAMZN;
-    MockOracle oPLTR;
+    OracleAdapter oTSLA;
+    OracleAdapter oAMZN;
+    OracleAdapter oPLTR;
 
     address governance = makeAddr("governance");
     address treasury   = makeAddr("treasury");
@@ -44,8 +44,8 @@ contract BasketImplementationTest is Test {
     CreatorToken         creatorToken;
 
     uint256 constant INITIAL_DEPOSIT = 100e6;
-    uint256 constant FEE_BPS         = 50;    // 0.5%
-    uint256 constant PROTO_SHARE     = 2_000; // 20% of fee
+    uint256 constant FEE_BPS         = 50;
+    uint256 constant PROTO_SHARE     = 2_000;
 
     function setUp() public {
         usdg = new MockERC20("USDG");
@@ -53,19 +53,28 @@ contract BasketImplementationTest is Test {
         amzn = new MockERC20("AMZN");
         pltr = new MockERC20("PLTR");
 
-        oTSLA = new MockOracle("TSLA/USD", 100_00000000);  // $100
-        oAMZN = new MockOracle("AMZN/USD", 200_00000000);  // $200
-        oPLTR = new MockOracle("PLTR/USD", 50_00000000);   // $50
+        // Round prices to keep NAV math clean in tests.
+        oTSLA = new OracleAdapter("TSLA/USD", 100_00000000); // $100
+        oAMZN = new OracleAdapter("AMZN/USD", 200_00000000); // $200
+        oPLTR = new OracleAdapter("PLTR/USD", 50_00000000);  // $50
 
         vm.startPrank(governance);
         registry = new WeaveRegistry(
             governance, address(usdg), treasury,
-            FEE_BPS, PROTO_SHARE, 50e6, 86_400, 10e6, 20, 100
+            FEE_BPS,     // managementFeeBps
+            PROTO_SHARE, // protocolShareBps
+            50e6,        // minAUMForAutomation
+            86_400,      // oracleStalenessSecs
+            10e6,        // minFirstDepositUsdg
+            20,          // maxConstituents
+            100,         // minWeightBps
+            1_000_000,   // minRebalanceTradeSizeUsdg: $1
+            100          // maxSwapSlippageBps: 1%
         );
 
         impl    = new BasketImplementation();
         factory = new BasketFactory(address(registry), address(impl));
-        router  = new MockSwapRouter(address(registry));
+        router  = new SwapRouter(address(registry));
 
         registry.setBasketFactory(address(factory));
         registry.setSwapRouter(address(router));
@@ -84,22 +93,21 @@ contract BasketImplementationTest is Test {
         }));
         vm.stopPrank();
 
-        // Fund router.
+        // Fund router treasury.
         tsla.mint(address(router), 100_000e18);
         amzn.mint(address(router), 100_000e18);
         pltr.mint(address(router), 100_000e18);
         usdg.mint(address(router), 10_000_000e6);
 
-        // Fund creator and deploy basket.
         usdg.mint(creator, 1_000_000e6);
         vm.prank(creator);
         usdg.approve(address(factory), type(uint256).max);
 
         address[] memory constituents = new address[](3);
         uint256[] memory weights      = new uint256[](3);
-        constituents[0] = address(tsla); weights[0] = 4_000; // 40%
-        constituents[1] = address(amzn); weights[1] = 3_000; // 30%
-        constituents[2] = address(pltr); weights[2] = 3_000; // 30%
+        constituents[0] = address(tsla); weights[0] = 4_000;
+        constituents[1] = address(amzn); weights[1] = 3_000;
+        constituents[2] = address(pltr); weights[2] = 3_000;
 
         vm.prank(creator);
         (address b, address ct) = factory.createBasket(
@@ -152,12 +160,10 @@ contract BasketImplementationTest is Test {
         basket.deposit(amount, 0, alice);
         vm.stopPrank();
 
-        // Each deposit triggers a fee snapshot if fee > 0.
         assertEq(creatorToken.snapshotCount(), snapsBefore + 1);
     }
 
     function test_deposit_revertWhenSuspended() public {
-        // Deactivate an asset to trigger suspension.
         vm.prank(governance);
         registry.deactivateAsset(address(tsla));
 
@@ -169,6 +175,47 @@ contract BasketImplementationTest is Test {
         vm.stopPrank();
     }
 
+    function test_deposit_revertWhenProtocolPaused() public {
+        vm.prank(governance);
+        registry.pauseAll();
+
+        usdg.mint(alice, 1_000e6);
+        vm.startPrank(alice);
+        usdg.approve(address(basket), 1_000e6);
+        vm.expectRevert(BasketImplementation.ProtocolPaused.selector);
+        basket.deposit(1_000e6, 0, alice);
+        vm.stopPrank();
+    }
+
+    function test_redeem_revertWhenProtocolPaused() public {
+        uint256 amount = 1_000e6;
+        usdg.mint(alice, amount);
+        vm.startPrank(alice);
+        usdg.approve(address(basket), amount);
+        uint256 minted = basket.deposit(amount, 0, alice);
+        vm.stopPrank();
+
+        vm.prank(governance);
+        registry.pauseAll();
+
+        vm.prank(alice);
+        vm.expectRevert(BasketImplementation.ProtocolPaused.selector);
+        basket.redeem(minted, 0, alice);
+    }
+
+    function test_rebalance_notBlockedByPause() public {
+        // Rebalancing must work even when protocol is paused.
+        oTSLA.setPrice(300_00000000);
+        assertTrue(basket.needsRebalancing());
+
+        vm.prank(governance);
+        registry.pauseAll();
+
+        uint256[] memory minAmounts = new uint256[](3);
+        basket.rebalance(minAmounts); // must not revert
+        assertFalse(basket.needsRebalancing());
+    }
+
     function test_deposit_revertSlippage() public {
         uint256 amount = 1_000e6;
         usdg.mint(alice, amount);
@@ -176,7 +223,7 @@ contract BasketImplementationTest is Test {
         vm.startPrank(alice);
         usdg.approve(address(basket), amount);
         vm.expectRevert(BasketImplementation.InsufficientSlippage.selector);
-        basket.deposit(amount, type(uint256).max, alice); // impossible min
+        basket.deposit(amount, type(uint256).max, alice);
         vm.stopPrank();
     }
 
@@ -194,7 +241,6 @@ contract BasketImplementationTest is Test {
 
         uint256 returned = usdg.balanceOf(alice) - usdgBefore;
         assertGt(returned, 0);
-        // Must be less than deposit due to fees.
         assertLt(returned, depositAmount);
     }
 
@@ -219,15 +265,11 @@ contract BasketImplementationTest is Test {
 
         vm.startPrank(alice);
         usdg.approve(address(basket), amount);
-        uint256 minted = basket.deposit(amount, 0, alice);
-
+        uint256 minted  = basket.deposit(amount, 0, alice);
         uint256 returned = basket.redeem(minted, 0, alice);
         vm.stopPrank();
 
-        // Two invariants we can guarantee regardless of swap rounding:
-        // 1. Can never get back more than deposited.
         assertLt(returned, amount);
-        // 2. Must get back something (not zero).
         assertGt(returned, 0);
     }
 
@@ -237,50 +279,37 @@ contract BasketImplementationTest is Test {
 
     function test_navPerToken_increasesWithPriceRise() public {
         uint256 navBefore = basket.navPerToken();
-
-        // Double the TSLA price.
         oTSLA.setPrice(200_00000000);
-
         uint256 navAfter = basket.navPerToken();
         assertGt(navAfter, navBefore);
     }
 
     function test_totalValueUsdg_matchesConstituents() public view {
-        uint256 totalValue = basket.totalValueUsdg();
-        assertGt(totalValue, 0);
+        assertGt(basket.totalValueUsdg(), 0);
     }
 
     function test_needsRebalancing_falseAtCreation() public view {
-        // Freshly created basket has exact target weights.
         assertFalse(basket.needsRebalancing());
     }
 
     function test_needsRebalancing_trueAfterPriceMove() public {
-        // Move TSLA price enough to push drift past 500 bps threshold.
-        oTSLA.setPrice(300_00000000); // was $100, now $300 — massive overweight
-
+        oTSLA.setPrice(300_00000000);
         assertTrue(basket.needsRebalancing());
     }
 
     function test_rebalance_restoresWeights() public {
-        // Dramatically move TSLA price to force rebalancing need.
         oTSLA.setPrice(300_00000000);
-
         assertTrue(basket.needsRebalancing());
 
         uint256[] memory minAmounts = new uint256[](3);
         basket.rebalance(minAmounts);
 
-        // After rebalancing, drift should be reduced.
-        // We can't assert perfect restoration due to oracle pricing,
-        // but needsRebalancing should be false.
         assertFalse(basket.needsRebalancing());
     }
 
     function test_rebalance_permissionless() public {
         oTSLA.setPrice(300_00000000);
 
-        // Alice (a random user) can trigger rebalancing.
         uint256[] memory minAmounts = new uint256[](3);
         vm.prank(alice);
         basket.rebalance(minAmounts);
@@ -295,7 +324,6 @@ contract BasketImplementationTest is Test {
     }
 
     function test_rebalance_revertWhenNotEnabled() public {
-        // Deploy a static basket (no rebalancing).
         address[] memory constituents = new address[](3);
         uint256[] memory weights      = new uint256[](3);
         constituents[0] = address(tsla); weights[0] = 4_000;
@@ -316,7 +344,6 @@ contract BasketImplementationTest is Test {
     }
 
     function test_multipleInvestors_proportionalNAV() public {
-        // Start with a fresh basket so only alice and bob are holders.
         address[] memory constituents = new address[](3);
         uint256[] memory weights      = new uint256[](3);
         constituents[0] = address(tsla); weights[0] = 4_000;
@@ -330,12 +357,11 @@ contract BasketImplementationTest is Test {
         vm.prank(creator);
         (address freshBasket,) = factory.createBasket(
             "Fresh", "FRESH", "thesis",
-            constituents, weights, false, 0, 10e6  // tiny initial deposit
+            constituents, weights, false, 0, 10e6
         );
 
         BasketImplementation fb = BasketImplementation(freshBasket);
 
-        // Alice and bob each deposit into the fresh basket.
         uint256 aliceDeposit = 1_000e6;
         uint256 bobDeposit   = 2_000e6;
 
@@ -352,8 +378,7 @@ contract BasketImplementationTest is Test {
         uint256 bobMinted = fb.deposit(bobDeposit, 0, bob);
         vm.stopPrank();
 
-        // Bob deposited exactly 2x alice with the same fee rate applied to both.
-        // The minting ratio should be 2:1. Allow 5% for rounding across swaps.
+        // Bob deposited 2x alice — allow 5% tolerance for rounding and spread.
         assertApproxEqRel(bobMinted, aliceMinted * 2, 0.05e18);
     }
 
@@ -390,10 +415,7 @@ contract BasketImplementationTest is Test {
         uint256 minted = basket.deposit(amount, 0, alice);
         vm.stopPrank();
 
-        // Minted tokens must be positive and total supply must increase.
         assertGt(minted, 0);
-        // The basket held tokens before alice deposited (creator's initial deposit).
-        // We just verify the invariant: minted > 0 and supply grew by exactly minted.
         assertEq(basket.balanceOf(alice), minted);
     }
 
@@ -403,12 +425,10 @@ contract BasketImplementationTest is Test {
 
         vm.startPrank(alice);
         usdg.approve(address(basket), amount);
-        uint256 minted = basket.deposit(amount, 0, alice);
-
+        uint256 minted  = basket.deposit(amount, 0, alice);
         uint256 returned = basket.redeem(minted, 0, alice);
         vm.stopPrank();
 
-        // Can never get back more than you put in.
         assertLe(returned, amount);
     }
 
@@ -425,7 +445,7 @@ contract BasketImplementationTest is Test {
     }
 
     function testFuzz_priceIncrease_navIncreases(uint256 newPrice) public {
-        newPrice = bound(newPrice, 101_00000000, 10_000_00000000); // $101 to $10,000
+        newPrice = bound(newPrice, 101_00000000, 10_000_00000000);
 
         uint256 navBefore = basket.navPerToken();
         // forge-lint: disable-next-line(unsafe-typecast)

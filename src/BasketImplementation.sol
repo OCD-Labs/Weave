@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IBasket} from "./interfaces/IBasket.sol";
-import {IWeaveRegistry} from "./interfaces/IWeaveRegistry.sol";
-import {ICreatorToken} from "./interfaces/ICreatorToken.sol";
-import {IWeaveRouter} from "./interfaces/IWeaveRouter.sol";
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {IBasket}         from "./interfaces/IBasket.sol";
+import {IWeaveRegistry}  from "./interfaces/IWeaveRegistry.sol";
+import {ICreatorToken}   from "./interfaces/ICreatorToken.sol";
+import {IWeaveRouter}    from "./interfaces/IWeaveRouter.sol";
+import {ERC20}           from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IERC20}          from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20}       from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math}            from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @notice Shared logic contract for all basket proxies.
@@ -17,7 +17,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///
 /// STORAGE LAYOUT — never reorder. Proxy compatibility depends on slot stability.
 /// Slot 0:  bool _initialized
-/// Slot 1:  bool _locked         (ReentrancyGuard — but we use our own to control layout)
+/// Slot 1:  bool _locked         (ReentrancyGuard)
 /// ERC-20 base occupies slots 2-6 (OZ ERC20 internal storage)
 /// Slot 7:  address _registry
 /// Slot 8:  address _creatorToken
@@ -36,16 +36,16 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
 
     address public override registry;
     address public override creatorToken;
-    string private _thesis;
+    string  private _thesis;
 
     address[] private _constituents;
     uint256[] private _targetWeightsBps;
     uint256[] private _constituentBalances;
 
-    bool public override rebalancingEnabled;
+    bool    public override rebalancingEnabled;
     uint256 public override driftThresholdBps;
     address public creator;
-    bool public override suspended;
+    bool    public override suspended;
 
     /// @notice Converts 6-decimal USDG to 18-decimal basket tokens on first deposit.
     /// usdg (6 dec) * 1e12 = basket token (18 dec). Establishes 1 USDG = 1 basket token initial price.
@@ -58,6 +58,7 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
     error AlreadyInitialized();
     error NotInitialized();
     error BasketSuspended();
+    error ProtocolPaused();
     error RebalancingNotEnabled();
     error DriftThresholdNotMet();
     error InvalidComposition();
@@ -66,6 +67,7 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
     error InsufficientSlippage();
     error ZeroAmount();
     error ConstituentNotActive(address token);
+    error ZeroAddress();
 
     event Deposited(
         address indexed investor,
@@ -86,12 +88,10 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
     /// all interaction goes through proxies. The ERC20 name/symbol here are
     /// placeholders; each proxy gets its own via initialize().
     constructor() ERC20("Weave Basket Implementation", "WBASKET-IMPL") {
-        // Mark initialized so nobody can initialize the implementation itself.
         _initialized = true;
     }
 
     /// @notice Called exactly once by BasketFactory immediately after clone deployment.
-    /// Sets all storage for this specific basket instance.
     function initialize(
         address _registry,
         address _creatorToken,
@@ -105,30 +105,27 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         address _creator
     ) external {
         if (_initialized) revert AlreadyInitialized();
+        if (_registry    == address(0)) revert ZeroAddress();
+        if (_creatorToken == address(0)) revert ZeroAddress();
+        if (_creator     == address(0)) revert ZeroAddress();
         _initialized = true;
 
-        registry = _registry;
-        creatorToken = _creatorToken;
-        _thesis = thesis_;
+        registry       = _registry;
+        creatorToken   = _creatorToken;
+        _thesis        = thesis_;
         rebalancingEnabled = _rebalancingEnabled;
-        driftThresholdBps = _driftThresholdBps;
-        creator = _creator;
+        driftThresholdBps  = _driftThresholdBps;
+        creator        = _creator;
 
-        // Copy arrays — we own these; the factory's calldata arrays are transient.
         for (uint256 i = 0; i < constituents_.length; ++i) {
             _constituents.push(constituents_[i]);
             _targetWeightsBps.push(targetWeightsBps_[i]);
             _constituentBalances.push(0);
         }
 
-        // ERC-20 name and symbol are set via internal OZ storage — we call the
-        // internal setters by re-using the inherited _name/_symbol approach.
-        // OZ ERC20 doesn't expose a setter, so we use a thin override pattern:
         _setNameAndSymbol(name_, symbol_);
     }
 
-    // OZ ERC20 stores name and symbol as immutables in v5, so we shadow them
-    // with our own storage slots to support proxy initialization.
     string private _basketName;
     string private _basketSymbol;
 
@@ -136,12 +133,11 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         string calldata name_,
         string calldata symbol_
     ) internal {
-        _basketName = name_;
+        _basketName   = name_;
         _basketSymbol = symbol_;
     }
 
     function name() public view override returns (string memory) {
-        // Return proxy-specific name if initialized, else implementation placeholder.
         bytes memory n = bytes(_basketName);
         return n.length > 0 ? _basketName : super.name();
     }
@@ -151,33 +147,35 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         return s.length > 0 ? _basketSymbol : super.symbol();
     }
 
+    // ── Core functions ────────────────────────────────────────────────────────
+
     /// @notice Deposit USDG into the basket.
     /// Fee is deducted first, then net USDG buys constituents in target proportions.
     /// Basket tokens are minted proportional to the depositor's contribution to total NAV.
+    /// Reverts if the protocol is paused or the basket is suspended.
     function deposit(
         uint256 usdgAmount,
         uint256 minBasketTokensOut,
         address receiver
     ) external override nonReentrant returns (uint256 basketTokensMinted) {
         if (usdgAmount == 0) revert ZeroAmount();
-        if (suspended) revert BasketSuspended();
-
-        _checkConstituentsActive();
+        if (suspended)       revert BasketSuspended();
 
         IWeaveRegistry reg = IWeaveRegistry(registry);
 
-        IERC20(reg.usdg()).safeTransferFrom(
-            msg.sender,
-            address(this),
-            usdgAmount
-        );
+        // Protocol-level pause check — governance can freeze all deposits instantly.
+        if (reg.paused()) revert ProtocolPaused();
+
+        _checkConstituentsActive();
+
+        IERC20(reg.usdg()).safeTransferFrom(msg.sender, address(this), usdgAmount);
 
         uint256 feeUsdg = _collectFee(usdgAmount, reg);
         uint256 netUsdg = usdgAmount - feeUsdg;
 
-        // Snapshot BEFORE buying so the depositor's own purchase
-        // doesn't inflate the denominator and dilute their share.
-        uint256 supplyBefore = totalSupply();
+        // Snapshot BEFORE buying so the depositor's own purchase does not
+        // inflate the denominator and dilute their share.
+        uint256 supplyBefore     = totalSupply();
         uint256 totalValueBefore = supplyBefore == 0 ? 0 : _totalValueUsdg(reg);
 
         _buyConstituents(netUsdg, reg);
@@ -185,59 +183,46 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         if (supplyBefore == 0) {
             basketTokensMinted = netUsdg * USDG_TO_TOKEN_SCALE;
         } else {
-            // floors toward zero
-            basketTokensMinted = Math.mulDiv(
-                netUsdg,
-                supplyBefore,
-                totalValueBefore
-            );
+            basketTokensMinted = Math.mulDiv(netUsdg, supplyBefore, totalValueBefore);
         }
 
-        _mint(receiver, basketTokensMinted);
+        // Check slippage BEFORE minting — revert costs less gas than reverting after state change.
+        if (basketTokensMinted < minBasketTokensOut) revert InsufficientSlippage();
 
-        if (basketTokensMinted < minBasketTokensOut)
-            revert InsufficientSlippage();
+        _mint(receiver, basketTokensMinted);
 
         emit Deposited(receiver, usdgAmount, basketTokensMinted, feeUsdg);
     }
 
     /// @notice Redeem basket tokens for USDG.
     /// Burns tokens, sells proportional underlying holdings, deducts fee, sends net USDG.
+    /// Reverts if the protocol is paused or the basket is suspended.
     function redeem(
         uint256 basketTokenAmount,
         uint256 minUsdgOut,
         address receiver
     ) external override nonReentrant returns (uint256 usdgReturned) {
         if (basketTokenAmount == 0) revert ZeroAmount();
-        if (suspended) revert BasketSuspended();
+        if (suspended)             revert BasketSuspended();
 
         IWeaveRegistry reg = IWeaveRegistry(registry);
 
-        uint256 supply = totalSupply();
-        uint256 nav = _totalValueUsdg(reg);
+        // Protocol-level pause check.
+        if (reg.paused()) revert ProtocolPaused();
 
-        // Gross USDG value of tokens being redeemed. Floors toward zero.
+        uint256 supply = totalSupply();
+        uint256 nav    = _totalValueUsdg(reg);
+
         uint256 grossUsdg = Math.mulDiv(basketTokenAmount, nav, supply);
 
-        // Burn first — reduces supply before any external calls.
+        // Burn first — reduces supply before any external calls (CEI pattern).
         _burn(msg.sender, basketTokenAmount);
 
-        // Sell proportional underlying positions.
-        uint256 usdgFromSales = _sellConstituents(
-            basketTokenAmount,
-            supply,
-            reg
-        );
+        uint256 usdgFromSales = _sellConstituents(basketTokenAmount, supply, reg);
 
-        // Deduct fee from the gross redemption value.
-        uint256 feeUsdg = Math.mulDiv(
-            grossUsdg,
-            reg.managementFeeBps(),
-            10_000
-        );
+        uint256 feeUsdg = Math.mulDiv(grossUsdg, reg.managementFeeBps(), 10_000);
         uint256 netUsdg = usdgFromSales > feeUsdg ? usdgFromSales - feeUsdg : 0;
 
-        // Distribute the fee split.
         if (feeUsdg > 0) _distributeFee(feeUsdg, reg);
 
         if (netUsdg < minUsdgOut) revert InsufficientSlippage();
@@ -250,52 +235,44 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
 
     /// @notice Rebalance constituents back to target weights.
     /// Permissionless — anyone can call. Automation calls it when protocol-funded.
-    /// Sells overweight positions first (accumulates USDG), then buys underweight.
+    /// Rebalancing is NOT blocked by protocol pause — reducing drift during a pause is safe.
     function rebalance(
         uint256[] calldata minAmountsOut
     ) external override nonReentrant {
         if (!rebalancingEnabled) revert RebalancingNotEnabled();
-        if (suspended) revert BasketSuspended();
+        if (suspended)           revert BasketSuspended();
 
-        IWeaveRegistry reg = IWeaveRegistry(registry);
-        uint256 totalValue = _totalValueUsdg(reg);
-        uint256 len = _constituents.length;
+        IWeaveRegistry reg  = IWeaveRegistry(registry);
+        uint256 totalValue  = _totalValueUsdg(reg);
+        uint256 len         = _constituents.length;
+        uint256 minTradeSize = reg.minRebalanceTradeSizeUsdg();
 
         int256[] memory deltas = new int256[](len);
         bool needsIt = false;
 
         for (uint256 i = 0; i < len; ++i) {
             (uint256 price, ) = reg.getAssetPrice(_constituents[i]);
-            uint256 currentValue = Math.mulDiv(
-                _constituentBalances[i],
-                price,
-                PRICE_SCALE
-            );
-            uint256 targetValue = Math.mulDiv(
-                totalValue,
-                _targetWeightsBps[i],
-                10_000
-            );
+            uint256 currentValue = Math.mulDiv(_constituentBalances[i], price, PRICE_SCALE);
+            uint256 targetValue  = Math.mulDiv(totalValue, _targetWeightsBps[i], 10_000);
 
             if (currentValue > targetValue) {
-                // Safe: currentValue > targetValue is guaranteed by the branch above,
-                // so the difference is positive and fits in int256.
-                // forge-lint: disable-next-line(unsafe-typecast)
-                deltas[i] = int256(currentValue - targetValue);
-                uint256 currentWeightBps = Math.mulDiv(
-                    currentValue,
-                    10_000,
-                    totalValue
-                );
-                uint256 drift = currentWeightBps > _targetWeightsBps[i]
-                    ? currentWeightBps - _targetWeightsBps[i]
-                    : _targetWeightsBps[i] - currentWeightBps;
-                if (drift >= driftThresholdBps) needsIt = true;
+                uint256 delta = currentValue - targetValue;
+                // Skip dust trades below the minimum rebalance size.
+                if (delta >= minTradeSize) {
+                    // forge-lint: disable-next-line(unsafe-typecast)
+                    deltas[i] = int256(delta);
+                    uint256 currentWeightBps = Math.mulDiv(currentValue, 10_000, totalValue);
+                    uint256 drift = currentWeightBps > _targetWeightsBps[i]
+                        ? currentWeightBps - _targetWeightsBps[i]
+                        : _targetWeightsBps[i] - currentWeightBps;
+                    if (drift >= driftThresholdBps) needsIt = true;
+                }
             } else {
-                // Safe: targetValue >= currentValue is guaranteed by the else branch,
-                // so the difference is positive and fits in int256 before negation.
-                // forge-lint: disable-next-line(unsafe-typecast)
-                deltas[i] = -int256(targetValue - currentValue);
+                uint256 delta = targetValue - currentValue;
+                if (delta >= minTradeSize) {
+                    // forge-lint: disable-next-line(unsafe-typecast)
+                    deltas[i] = -int256(delta);
+                }
             }
         }
 
@@ -314,14 +291,13 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         IWeaveRegistry reg
     ) internal {
         address router = reg.swapRouter();
-        uint256 len = _constituents.length;
+        uint256 len    = _constituents.length;
 
         for (uint256 i = 0; i < len; ++i) {
             if (deltas[i] <= 0) continue;
 
             (uint256 price, ) = reg.getAssetPrice(_constituents[i]);
             uint256 usdgToRaise = uint256(deltas[i]);
-            // floors toward zero — we may sell slightly less than ideal
             uint256 tokenToSell = Math.mulDiv(usdgToRaise, PRICE_SCALE, price);
             if (tokenToSell == 0) continue;
             if (tokenToSell > _constituentBalances[i])
@@ -330,12 +306,13 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
             uint256 minOut = minAmountsOut.length > i ? minAmountsOut[i] : 0;
 
             IERC20(_constituents[i]).forceApprove(router, tokenToSell);
-            IWeaveRouter(router).swapExactTokenForUSDG(
+            uint256 usdgFromSell = IWeaveRouter(router).swapExactTokenForUSDG(
                 _constituents[i],
                 tokenToSell,
                 minOut,
                 address(this)
             );
+            if (usdgFromSell == 0) continue;
 
             _constituentBalances[i] -= tokenToSell;
         }
@@ -346,16 +323,16 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         int256[] memory deltas,
         IWeaveRegistry reg
     ) internal {
-        address router = reg.swapRouter();
-        address usdg_ = reg.usdg();
-        uint256 len = _constituents.length;
-        uint256 availableUsdg = IERC20(usdg_).balanceOf(address(this));
+        address router   = reg.swapRouter();
+        address usdg_    = reg.usdg();
+        uint256 len      = _constituents.length;
+        uint256 available = IERC20(usdg_).balanceOf(address(this));
 
         for (uint256 i = 0; i < len; ++i) {
             if (deltas[i] >= 0) continue;
 
             uint256 usdgNeeded = uint256(-deltas[i]);
-            if (usdgNeeded > availableUsdg) usdgNeeded = availableUsdg;
+            if (usdgNeeded > available) usdgNeeded = available;
             if (usdgNeeded == 0) continue;
 
             IERC20(usdg_).forceApprove(router, usdgNeeded);
@@ -367,20 +344,20 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
             );
 
             _constituentBalances[i] += tokensReceived;
-            availableUsdg -= usdgNeeded;
+            available -= usdgNeeded;
         }
     }
 
-    /// @notice Collect accrued fees. Called internally on deposit/redeem.
-    /// Can also be called externally by anyone to force a fee distribution.
+    /// @notice External collectFees distributes whatever free USDG is sitting
+    /// in the basket — handles dust accumulation from rebalancing rounding.
     function collectFees() external override nonReentrant {
-        IWeaveRegistry reg = IWeaveRegistry(registry);
-        uint256 usdgBalance = IERC20(reg.usdg()).balanceOf(address(this));
+        IWeaveRegistry reg    = IWeaveRegistry(registry);
+        uint256 usdgBalance   = IERC20(reg.usdg()).balanceOf(address(this));
         if (usdgBalance == 0) return;
-        // External collectFees distributes whatever free USDG is sitting in the basket.
-        // This handles dust accumulation from rounding across many rebalance cycles.
         _distributeFee(usdgBalance, reg);
     }
+
+    // ── View functions ────────────────────────────────────────────────────────
 
     function totalValueUsdg() external view override returns (uint256) {
         return _totalValueUsdg(IWeaveRegistry(registry));
@@ -389,38 +366,23 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
     function navPerToken() external view override returns (uint256) {
         uint256 supply = totalSupply();
         if (supply == 0) return 0;
-        // navPerToken in USDG with 18-decimal precision. Floors toward zero.
-        return
-            Math.mulDiv(
-                _totalValueUsdg(IWeaveRegistry(registry)),
-                1e18,
-                supply
-            );
+        return Math.mulDiv(_totalValueUsdg(IWeaveRegistry(registry)), 1e18, supply);
     }
 
-    function currentWeightsBps()
-        external
-        view
-        override
-        returns (uint256[] memory)
-    {
+    function currentWeightsBps() external view override returns (uint256[] memory) {
         IWeaveRegistry reg = IWeaveRegistry(registry);
         return _currentWeightsBps(reg, _totalValueUsdg(reg));
     }
 
     function maxDrift() external view override returns (uint256) {
-        IWeaveRegistry reg = IWeaveRegistry(registry);
-        uint256 totalValue = _totalValueUsdg(reg);
-        uint256 len = _constituents.length;
-        uint256 maxD = 0;
+        IWeaveRegistry reg  = IWeaveRegistry(registry);
+        uint256 totalValue  = _totalValueUsdg(reg);
+        uint256 len         = _constituents.length;
+        uint256 maxD        = 0;
 
         for (uint256 i = 0; i < len; ++i) {
             (uint256 price, ) = reg.getAssetPrice(_constituents[i]);
-            uint256 currentValue = Math.mulDiv(
-                _constituentBalances[i],
-                price,
-                PRICE_SCALE
-            );
+            uint256 currentValue     = Math.mulDiv(_constituentBalances[i], price, PRICE_SCALE);
             uint256 currentWeightBps = totalValue > 0
                 ? Math.mulDiv(currentValue, 10_000, totalValue)
                 : 0;
@@ -435,17 +397,13 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
 
     function needsRebalancing() external view override returns (bool) {
         if (!rebalancingEnabled || suspended) return false;
-        IWeaveRegistry reg = IWeaveRegistry(registry);
-        uint256 totalValue = _totalValueUsdg(reg);
-        uint256 len = _constituents.length;
+        IWeaveRegistry reg  = IWeaveRegistry(registry);
+        uint256 totalValue  = _totalValueUsdg(reg);
+        uint256 len         = _constituents.length;
 
         for (uint256 i = 0; i < len; ++i) {
             (uint256 price, ) = reg.getAssetPrice(_constituents[i]);
-            uint256 currentValue = Math.mulDiv(
-                _constituentBalances[i],
-                price,
-                PRICE_SCALE
-            );
+            uint256 currentValue     = Math.mulDiv(_constituentBalances[i], price, PRICE_SCALE);
             uint256 currentWeightBps = totalValue > 0
                 ? Math.mulDiv(currentValue, 10_000, totalValue)
                 : 0;
@@ -462,21 +420,11 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         return _constituents;
     }
 
-    function targetWeightsBps()
-        external
-        view
-        override
-        returns (uint256[] memory)
-    {
+    function targetWeightsBps() external view override returns (uint256[] memory) {
         return _targetWeightsBps;
     }
 
-    function constituentBalances()
-        external
-        view
-        override
-        returns (uint256[] memory)
-    {
+    function constituentBalances() external view override returns (uint256[] memory) {
         return _constituentBalances;
     }
 
@@ -501,48 +449,41 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         )
     {
         IWeaveRegistry reg = IWeaveRegistry(registry);
-        totalValueOut = _totalValueUsdg(reg);
-        uint256 supply = totalSupply();
+        totalValueOut      = _totalValueUsdg(reg);
+        uint256 supply     = totalSupply();
 
-        constituentsOut = _constituents;
-        targetWeightsOut = _targetWeightsBps;
-        balancesOut = _constituentBalances;
-        currentWeightsOut = _currentWeightsBps(reg, totalValueOut);
+        constituentsOut      = _constituents;
+        targetWeightsOut     = _targetWeightsBps;
+        balancesOut          = _constituentBalances;
+        currentWeightsOut    = _currentWeightsBps(reg, totalValueOut);
         rebalancingEnabledOut = rebalancingEnabled;
         driftThresholdBpsOut = driftThresholdBps;
-
-        // floors toward zero
-        navOut = supply > 0 ? Math.mulDiv(totalValueOut, 1e18, supply) : 0;
-        maxDriftOut = _computeMaxDrift(currentWeightsOut);
+        navOut               = supply > 0 ? Math.mulDiv(totalValueOut, 1e18, supply) : 0;
+        maxDriftOut          = _computeMaxDrift(currentWeightsOut);
     }
 
-    /// @notice Pulled out of basketState to keep that frame's stack depth below the limit.
+    // ── Internal helpers ──────────────────────────────────────────────────────
+
     function _computeMaxDrift(
         uint256[] memory currentWeights
     ) internal view returns (uint256 maxD) {
         uint256 len = currentWeights.length;
         for (uint256 i = 0; i < len; ++i) {
-            uint256 cw = currentWeights[i];
-            uint256 tw = _targetWeightsBps[i];
+            uint256 cw   = currentWeights[i];
+            uint256 tw   = _targetWeightsBps[i];
             uint256 drift = cw > tw ? cw - tw : tw - cw;
             if (drift > maxD) maxD = drift;
         }
     }
 
-    /// @notice Sum of (constituentBalance * oraclePrice / PRICE_SCALE) across all constituents.
-    /// Result is in 6-decimal USDG terms. Floors toward zero at each division.
-    function _totalValueUsdg(
-        IWeaveRegistry reg
-    ) internal view returns (uint256 total) {
+    function _totalValueUsdg(IWeaveRegistry reg) internal view returns (uint256 total) {
         uint256 len = _constituents.length;
         for (uint256 i = 0; i < len; ++i) {
             (uint256 price, ) = reg.getAssetPrice(_constituents[i]);
-            // mulDiv: (18 dec * 8 dec) / 1e20 = 6 dec. Floors toward zero.
             total += Math.mulDiv(_constituentBalances[i], price, PRICE_SCALE);
         }
     }
 
-    /// @notice Current weight of each constituent in bps based on live oracle prices.
     function _currentWeightsBps(
         IWeaveRegistry reg,
         uint256 totalValue
@@ -553,75 +494,63 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
 
         for (uint256 i = 0; i < len; ++i) {
             (uint256 price, ) = reg.getAssetPrice(_constituents[i]);
-            uint256 value = Math.mulDiv(
-                _constituentBalances[i],
-                price,
-                PRICE_SCALE
-            );
-            // floors toward zero — residual bps lost to rounding is dust
-            weights[i] = Math.mulDiv(value, 10_000, totalValue);
+            uint256 value = Math.mulDiv(_constituentBalances[i], price, PRICE_SCALE);
+            weights[i]    = Math.mulDiv(value, 10_000, totalValue);
         }
     }
 
-    /// @notice Deduct the management fee from usdgAmount, distribute the split,
-    /// and return the fee taken. Net = usdgAmount - feeUsdg.
     function _collectFee(
         uint256 usdgAmount,
         IWeaveRegistry reg
     ) internal returns (uint256 feeUsdg) {
         uint256 feeBps = reg.managementFeeBps();
         if (feeBps == 0) return 0;
-
-        // floors toward zero — any sub-bps fraction is not charged
         feeUsdg = Math.mulDiv(usdgAmount, feeBps, 10_000);
         if (feeUsdg == 0) return 0;
-
         _distributeFee(feeUsdg, reg);
     }
 
-    /// @notice Split feeUsdg between protocol treasury and creator token revenue pool.
     function _distributeFee(uint256 feeUsdg, IWeaveRegistry reg) internal {
-        address usdg_ = reg.usdg();
-
-        // floors toward zero — protocol gets slightly less on rounding
-        uint256 protocolCut = Math.mulDiv(
-            feeUsdg,
-            reg.protocolShareBps(),
-            10_000
-        );
-        uint256 creatorCut = feeUsdg - protocolCut;
+        address usdg_      = reg.usdg();
+        uint256 protocolCut = Math.mulDiv(feeUsdg, reg.protocolShareBps(), 10_000);
+        uint256 creatorCut  = feeUsdg - protocolCut;
 
         if (protocolCut > 0) {
             IERC20(usdg_).safeTransfer(reg.protocolTreasury(), protocolCut);
         }
 
         if (creatorCut > 0) {
-            // Approve the creator token contract to pull creatorCut from this basket.
             IERC20(usdg_).forceApprove(creatorToken, creatorCut);
             ICreatorToken(creatorToken).snapshotRevenue(creatorCut);
         }
     }
 
     /// @notice Buy each constituent in target-weight proportions using netUsdg.
+    /// Applies per-leg slippage protection using the oracle price and
+    /// registry.maxSwapSlippageBps to compute minimum acceptable token output.
     function _buyConstituents(uint256 netUsdg, IWeaveRegistry reg) internal {
-        address router = reg.swapRouter();
-        address usdg_ = reg.usdg();
-        uint256 len = _constituents.length;
+        address router        = reg.swapRouter();
+        address usdg_         = reg.usdg();
+        uint256 len           = _constituents.length;
+        uint256 slippageBps   = reg.maxSwapSlippageBps();
 
         for (uint256 i = 0; i < len; ++i) {
-            // floors toward zero — any sub-bps residual stays as USDG dust in the basket
-            uint256 usdgForThis = Math.mulDiv(
-                netUsdg,
-                _targetWeightsBps[i],
-                10_000
-            );
+            uint256 usdgForThis = Math.mulDiv(netUsdg, _targetWeightsBps[i], 10_000);
             if (usdgForThis == 0) continue;
+
+            // Compute minimum acceptable token output from oracle price minus slippage.
+            // This protects each individual swap leg on mainnet with a real DEX.
+            (uint256 price, ) = reg.getAssetPrice(_constituents[i]);
+            // expectedTokens = usdgForThis * PRICE_SCALE / price (floors toward zero)
+            uint256 expectedTokens = Math.mulDiv(usdgForThis, PRICE_SCALE, price);
+            // minTokenOut = expectedTokens * (10_000 - slippageBps) / 10_000
+            uint256 minTokenOut    = Math.mulDiv(expectedTokens, 10_000 - slippageBps, 10_000);
 
             IERC20(usdg_).forceApprove(router, usdgForThis);
             uint256 received = IWeaveRouter(router).swapExactUSDGForToken(
                 _constituents[i],
                 usdgForThis,
-                0, // slippage: MockRouter prices at oracle; caller sets minBasketTokensOut
+                minTokenOut,
                 address(this)
             );
 
@@ -629,18 +558,15 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         }
     }
 
-    /// @notice Sell each constituent proportional to the fraction of supply being redeemed.
-    /// Returns total USDG received from all sales.
     function _sellConstituents(
         uint256 basketTokenAmount,
         uint256 supply,
         IWeaveRegistry reg
     ) internal returns (uint256 totalUsdg) {
         address router = reg.swapRouter();
-        uint256 len = _constituents.length;
+        uint256 len    = _constituents.length;
 
         for (uint256 i = 0; i < len; ++i) {
-            // floors toward zero — redeemer gets slightly less on rounding
             uint256 tokensToSell = Math.mulDiv(
                 _constituentBalances[i],
                 basketTokenAmount,
@@ -661,33 +587,11 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         }
     }
 
-    /// @notice Mint basket tokens using supply and totalValue captured before the buy.
-    /// This prevents the depositor's own purchase from diluting their own share.
-    function _mintFromSnapshot(
-        uint256 netUsdg,
-        uint256 supplyBefore,
-        uint256 totalValueBefore
-    ) internal returns (uint256 minted) {
-        if (supplyBefore == 0) {
-            // First depositor: 1 USDG (6 dec) → 1 basket token (18 dec).
-            minted = netUsdg * USDG_TO_TOKEN_SCALE;
-        } else {
-            // Proportional share based on pre-purchase NAV. Floors toward zero.
-            minted = Math.mulDiv(netUsdg, supplyBefore, totalValueBefore);
-        }
-
-        _mint(msg.sender == address(this) ? msg.sender : msg.sender, minted);
-    }
-
-    /// @notice Revert if any constituent is currently inactive in the registry.
-    /// Catches the case where governance deactivated an asset this basket holds.
     function _checkConstituentsActive() internal {
         IWeaveRegistry reg = IWeaveRegistry(registry);
-        uint256 len = _constituents.length;
+        uint256 len        = _constituents.length;
         for (uint256 i = 0; i < len; ++i) {
-            IWeaveRegistry.AssetConfig memory cfg = reg.assets(
-                _constituents[i]
-            );
+            IWeaveRegistry.AssetConfig memory cfg = reg.assets(_constituents[i]);
             if (!cfg.active) {
                 suspended = true;
                 emit Suspended();

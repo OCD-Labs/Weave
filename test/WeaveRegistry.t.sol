@@ -3,20 +3,20 @@ pragma solidity ^0.8.24;
 
 import {Test, console} from "forge-std/Test.sol";
 import {WeaveRegistry}  from "../src/WeaveRegistry.sol";
-import {MockOracle}     from "../src/MockOracle.sol";
+import {OracleAdapter}  from "../src/OracleAdapter.sol";
 import {IWeaveRegistry} from "../src/interfaces/IWeaveRegistry.sol";
 
 contract WeaveRegistryTest is Test {
 
     WeaveRegistry registry;
-    MockOracle    oracle;
+    OracleAdapter oracle;
 
-    address governance  = makeAddr("governance");
-    address treasury    = makeAddr("treasury");
-    address usdg        = makeAddr("usdg");
-    address token       = makeAddr("token");
-    address factory     = makeAddr("factory");
-    address notGov      = makeAddr("notGov");
+    address governance = makeAddr("governance");
+    address treasury   = makeAddr("treasury");
+    address usdg       = makeAddr("usdg");
+    address token      = makeAddr("token");
+    address factory    = makeAddr("factory");
+    address notGov     = makeAddr("notGov");
 
     function setUp() public {
         vm.prank(governance);
@@ -24,37 +24,63 @@ contract WeaveRegistryTest is Test {
             governance,
             usdg,
             treasury,
-            50,         // managementFeeBps: 0.5%
-            2_000,      // protocolShareBps: 20%
-            100_000_000,
-            86_400,
-            10_000_000,
-            20,
-            100
+            50,          // managementFeeBps: 0.5%
+            2_000,       // protocolShareBps: 20%
+            100_000_000, // minAUMForAutomation
+            86_400,      // oracleStalenessSecs
+            10_000_000,  // minFirstDepositUsdg
+            20,          // maxConstituents
+            100,         // minWeightBps
+            1_000_000,   // minRebalanceTradeSizeUsdg: $1
+            100          // maxSwapSlippageBps: 1%
         );
 
-        oracle = new MockOracle("TEST / USD", 100_00000000); // $100
+        oracle = new OracleAdapter("TEST / USD", 100_00000000); // $100
     }
 
     function test_constructorSetsParams() public view {
-        assertEq(registry.governance(),        governance);
-        assertEq(registry.usdg(),              usdg);
-        assertEq(registry.protocolTreasury(),  treasury);
-        assertEq(registry.managementFeeBps(),  50);
-        assertEq(registry.protocolShareBps(),  2_000);
-        assertEq(registry.creatorShareBps(),   8_000);
-        assertEq(registry.maxConstituents(),   20);
-        assertEq(registry.minWeightBps(),      100);
+        assertEq(registry.governance(),                governance);
+        assertEq(registry.usdg(),                     usdg);
+        assertEq(registry.protocolTreasury(),          treasury);
+        assertEq(registry.managementFeeBps(),          50);
+        assertEq(registry.protocolShareBps(),          2_000);
+        assertEq(registry.creatorShareBps(),           8_000);
+        assertEq(registry.maxConstituents(),           20);
+        assertEq(registry.minWeightBps(),              100);
+        assertEq(registry.minRebalanceTradeSizeUsdg(), 1_000_000);
+        assertEq(registry.maxSwapSlippageBps(),        100);
+        assertFalse(registry.paused());
     }
 
     function test_revertConstructor_zeroGovernance() public {
         vm.expectRevert(WeaveRegistry.ZeroAddress.selector);
-        new WeaveRegistry(address(0), usdg, treasury, 50, 2_000, 1e8, 86400, 1e7, 20, 100);
+        new WeaveRegistry(address(0), usdg, treasury, 50, 2_000, 1e8, 86400, 1e7, 20, 100, 1e6, 100);
     }
 
     function test_revertConstructor_feeTooHigh() public {
         vm.expectRevert(WeaveRegistry.InvalidFeeBps.selector);
-        new WeaveRegistry(governance, usdg, treasury, 1_001, 2_000, 1e8, 86400, 1e7, 20, 100);
+        new WeaveRegistry(governance, usdg, treasury, 1_001, 2_000, 1e8, 86400, 1e7, 20, 100, 1e6, 100);
+    }
+
+    function test_pauseAll() public {
+        assertFalse(registry.paused());
+        vm.prank(governance);
+        registry.pauseAll();
+        assertTrue(registry.paused());
+    }
+
+    function test_unpauseAll() public {
+        vm.startPrank(governance);
+        registry.pauseAll();
+        registry.unpauseAll();
+        vm.stopPrank();
+        assertFalse(registry.paused());
+    }
+
+    function test_revertPauseAll_notGovernance() public {
+        vm.prank(notGov);
+        vm.expectRevert(WeaveRegistry.NotGovernance.selector);
+        registry.pauseAll();
     }
 
     function test_addAsset() public {
@@ -127,8 +153,8 @@ contract WeaveRegistryTest is Test {
     }
 
     function test_getSupportedAssets() public {
-        address token2 = makeAddr("token2");
-        MockOracle oracle2 = new MockOracle("TEST2 / USD", 200_00000000);
+        address token2  = makeAddr("token2");
+        OracleAdapter oracle2 = new OracleAdapter("TEST2 / USD", 200_00000000);
 
         vm.startPrank(governance);
         registry.addAsset(IWeaveRegistry.AssetConfig({
@@ -182,7 +208,6 @@ contract WeaveRegistryTest is Test {
             active:       true
         }));
 
-        // Warp forward past the staleness window.
         vm.warp(block.timestamp + 86_401);
 
         vm.expectRevert(abi.encodeWithSelector(WeaveRegistry.StalePrice.selector, token));
@@ -256,7 +281,7 @@ contract WeaveRegistryTest is Test {
 
         vm.prank(newGov);
         registry.acceptGovernance();
-        assertEq(registry.governance(), newGov);
+        assertEq(registry.governance(),        newGov);
         assertEq(registry.pendingGovernance(), address(0));
     }
 
@@ -278,6 +303,18 @@ contract WeaveRegistryTest is Test {
         assertEq(registry.protocolShareBps(), 3_000);
         assertEq(registry.creatorShareBps(),  7_000);
         assertEq(registry.protocolShareBps() + registry.creatorShareBps(), 10_000);
+    }
+
+    function test_setMinRebalanceTradeSize() public {
+        vm.prank(governance);
+        registry.setMinRebalanceTradeSize(5_000_000);
+        assertEq(registry.minRebalanceTradeSizeUsdg(), 5_000_000);
+    }
+
+    function test_setMaxSwapSlippage() public {
+        vm.prank(governance);
+        registry.setMaxSwapSlippage(200);
+        assertEq(registry.maxSwapSlippageBps(), 200);
     }
 
     function testFuzz_managementFeeCap(uint256 feeBps) public {
@@ -315,7 +352,6 @@ contract WeaveRegistryTest is Test {
         warpSecs = bound(warpSecs, 0, 86_400);
         vm.warp(block.timestamp + warpSecs);
 
-        // Within window: should not revert.
         (uint256 price,) = registry.getAssetPrice(token);
         assertGt(price, 0);
     }

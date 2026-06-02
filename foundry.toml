@@ -18,6 +18,11 @@ remappings = [
     "openzeppelin-contracts/=lib/openzeppelin-contracts/",
 ]
 
+[profile.contracts]
+src    = "src"
+test   = "/dev/null"
+script = "script"
+
 [rpc_endpoints]
 robinhood_testnet = "${RPC_URL}"
 

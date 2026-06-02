@@ -49,6 +49,10 @@ install:
 build:
 	forge build
 
+.PHONY: build-contracts
+build-contracts:
+	FOUNDRY_PROFILE=contracts forge build
+
 .PHONY: test
 test:
 	forge test
