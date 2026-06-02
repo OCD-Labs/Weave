@@ -10,12 +10,12 @@ interface IWeaveOracle {
     /// @notice Returns the full Chainlink-compatible round data.
     /// Matches AggregatorV3Interface.latestRoundData() exactly so a mainnet
     /// wrapper needs only to forward that call.
-    /// @return roundId       The round ID of this price update.
-    /// @return answer        The price in 8-decimal USD. Always positive for valid feeds.
-    /// @return startedAt     Timestamp when the round started.
-    /// @return updatedAt     Timestamp when the round was last updated. Used for staleness checks.
+    /// @return roundId         The round ID of this price update.
+    /// @return answer          The price in 8-decimal USD. Always positive for valid feeds.
+    /// @return startedAt       Timestamp when the round started.
+    /// @return updatedAt       Timestamp when the round was last updated. Used for staleness checks.
     /// @return answeredInRound The round in which the answer was computed.
-    function latestPrice()
+    function latestRoundData()
         external
         view
         returns (

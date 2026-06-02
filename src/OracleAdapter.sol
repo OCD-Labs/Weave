@@ -45,7 +45,7 @@ contract OracleAdapter is IWeaveOracle {
     /// @notice Returns full Chainlink AggregatorV3Interface-compatible round data.
     /// roundId and answeredInRound increment on every setPrice call.
     /// startedAt equals updatedAt since we have no concept of round start on testnet.
-    function latestPrice()
+    function latestRoundData()
         external
         view
         override
