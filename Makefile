@@ -169,6 +169,29 @@ creator-claim:
 		--rpc-url $(RPC_URL) \
 		--private-key $(PRIVATE_KEY)
 
+.PHONY: update-prices
+update-prices:
+	cast send $(ORACLE_TSLA) "setPrice(int256)" $(TSLA_PRICE_8DEC) --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(ORACLE_AMZN) "setPrice(int256)" $(AMZN_PRICE_8DEC) --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(ORACLE_PLTR) "setPrice(int256)" $(PLTR_PRICE_8DEC) --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(ORACLE_NFLX) "setPrice(int256)" $(NFLX_PRICE_8DEC) --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(ORACLE_AMD)  "setPrice(int256)" $(AMD_PRICE_8DEC)  --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+
+.PHONY: fund-router
+fund-router:
+	cast send $(TSLA_ADDRESS) "approve(address,uint256)" $(SWAP_ROUTER_ADDRESS) 5000000000000000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(AMZN_ADDRESS) "approve(address,uint256)" $(SWAP_ROUTER_ADDRESS) 5000000000000000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(PLTR_ADDRESS) "approve(address,uint256)" $(SWAP_ROUTER_ADDRESS) 5000000000000000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(NFLX_ADDRESS) "approve(address,uint256)" $(SWAP_ROUTER_ADDRESS) 5000000000000000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(AMD_ADDRESS)  "approve(address,uint256)" $(SWAP_ROUTER_ADDRESS) 5000000000000000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(USDG_ADDRESS) "approve(address,uint256)" $(SWAP_ROUTER_ADDRESS) 50000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(SWAP_ROUTER_ADDRESS) "fund(address,uint256)" $(TSLA_ADDRESS) 5000000000000000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(SWAP_ROUTER_ADDRESS) "fund(address,uint256)" $(AMZN_ADDRESS) 5000000000000000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(SWAP_ROUTER_ADDRESS) "fund(address,uint256)" $(PLTR_ADDRESS) 5000000000000000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(SWAP_ROUTER_ADDRESS) "fund(address,uint256)" $(NFLX_ADDRESS) 5000000000000000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(SWAP_ROUTER_ADDRESS) "fund(address,uint256)" $(AMD_ADDRESS)  5000000000000000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+	cast send $(SWAP_ROUTER_ADDRESS) "fund(address,uint256)" $(USDG_ADDRESS) 50000000 --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY)
+
 .PHONY: env
 env:
 	@echo "CHAIN_ID  = $(CHAIN_ID)"
