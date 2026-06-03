@@ -1,6 +1,6 @@
 # Weave — Onchain Index Protocol for Tokenized Equities
 
-> Built for the Arbitrum Open House London: Online Buildathon, 2026
+> Built during the Arbitrum Open House London: Online Buildathon, 2026
 >
 > **Team:** Yemi (Ikeh Chukwuka Favour) — OCD Labs
 
