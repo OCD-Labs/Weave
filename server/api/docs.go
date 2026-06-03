@@ -49,7 +49,7 @@ const openAPISpec = `{
                     "symbol": "AMD",
                     "name": "Advanced Micro Devices Inc",
                     "sector": "Technology",
-                    "oracle": "0xc04938e2697cb6633f3356734c01050919d93514",
+                    "oracle": "0xDaf7e6168A748A0348e8392d31377B486D9278Ab",
                     "isActive": true,
                     "currentPriceUsdg": "49701000000",
                     "priceChange24hPct": "2.45"
@@ -125,7 +125,7 @@ const openAPISpec = `{
             "in": "path",
             "required": true,
             "description": "Basket proxy contract address",
-            "schema": { "type": "string", "example": "0x0ae70af2671f5bcbb90dd7582ba44db3a0b8be01" }
+            "schema": { "type": "string", "example": "0x4783ef175d5f9f0082a2ab61352c4db6f149a7d2" }
           }
         ],
         "responses": {
@@ -218,7 +218,7 @@ const openAPISpec = `{
             "in": "path",
             "required": true,
             "description": "Creator token contract address",
-            "schema": { "type": "string", "example": "0xa7a47826db02f357e3a0025a0638a18ee560edde" }
+            "schema": { "type": "string", "example": "0x4fE76585301dC9ae7f4FaB6Eca1DD9e8caD3Bbb7" }
           }
         ],
         "responses": {
