@@ -450,7 +450,7 @@ func (h *handler) fetchBasketStateRPC(basketAddr string) (*basketStateCache, err
 		"type":"function"
 	}]`))
 
-	rpcURL := os.Getenv("ALCHEMY_RPC_URL")
+	rpcURL := os.Getenv("RPC_URL")
 	if rpcURL == "" {
 		rpcURL = "https://rpc.testnet.chain.robinhood.com"
 	}
@@ -1162,7 +1162,7 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Open one RPC client for all claimable revenue reads across all baskets.
-	rpcURL := os.Getenv("ALCHEMY_RPC_URL")
+	rpcURL := os.Getenv("RPC_URL")
 	if rpcURL == "" {
 		rpcURL = "https://rpc.testnet.chain.robinhood.com"
 	}

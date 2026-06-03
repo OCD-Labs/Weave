@@ -21,15 +21,15 @@ import (
 func main() {
 	_ = godotenv.Load()
 
-	dbPath       := envOrDefault("DB_PATH", "./weave.db")
-	rpcURL       := mustEnv("ALCHEMY_RPC_URL")
-	wsURL        := mustEnv("ALCHEMY_WS_URL")
+	dbPath := envOrDefault("DB_PATH", "./weave.db")
+	rpcURL := envOrDefault("RPC_URL", "https://rpc.testnet.chain.robinhood.com")
+	wsURL := mustEnv("ALCHEMY_WS_URL")
 	registryAddr := mustEnv("WEAVE_REGISTRY_ADDRESS")
-	apiPort      := envOrDefault("API_PORT", "8080")
+	apiPort := envOrDefault("API_PORT", "8080")
 
-	pollIntervalSec    := envOrDefaultInt("PRICE_POLL_INTERVAL_SECS", 60)
-	navIntervalSec     := envOrDefaultInt("NAV_POLL_INTERVAL_SECS", 300)
-	deployBlock        := envOrDefaultInt64("DEPLOY_BLOCK", 65989689)
+	pollIntervalSec := envOrDefaultInt("PRICE_POLL_INTERVAL_SECS", 60)
+	navIntervalSec := envOrDefaultInt("NAV_POLL_INTERVAL_SECS", 300)
+	deployBlock := envOrDefaultInt64("DEPLOY_BLOCK", 65989689)
 
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -52,11 +52,11 @@ func main() {
 	navPoller := nav.NewPoller(rpcURL, database, time.Duration(navIntervalSec)*time.Second)
 	go navPoller.Run(ctx)
 
-	openAIKey   := mustEnv("OPENAI_API_KEY")
+	openAIKey := mustEnv("OPENAI_API_KEY")
 	openAIModel := envOrDefault("OPENAI_MODEL", "gpt-4.1-mini")
 
 	handler := api.NewRouter(database, openAIKey, openAIModel)
-	
+
 	srv := &http.Server{
 		Addr:         ":" + apiPort,
 		Handler:      handler,
