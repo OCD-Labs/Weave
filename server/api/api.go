@@ -26,6 +26,7 @@ type snapshotEntry struct {
 	SnapshotID    int64  `json:"snapshotId"`
 	UsdgAmount    string `json:"usdgAmount"`
 	Timestamp     int64  `json:"timestamp"`
+	TxHash        string `json:"txHash"`
 	ClaimableUsdg string `json:"claimableByWallet"`
 }
 
@@ -1130,7 +1131,7 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapRows, err := h.db.Query(
-		`SELECT basket_address, snapshot_id, usdg_amount, timestamp
+		`SELECT basket_address, snapshot_id, usdg_amount, timestamp, tx_hash
 		 FROM fee_snapshots
 		 WHERE basket_address IN (`+strings.Join(placeholders, ",")+`)
 		 ORDER BY basket_address, snapshot_id ASC`,
@@ -1143,7 +1144,7 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 		for snapRows.Next() {
 			var bAddr string
 			var s snapshotEntry
-			if snapRows.Scan(&bAddr, &s.SnapshotID, &s.UsdgAmount, &s.Timestamp) == nil {
+			if snapRows.Scan(&bAddr, &s.SnapshotID, &s.UsdgAmount, &s.Timestamp, &s.TxHash) == nil {
 				snapshotsByBasket[bAddr] = append(snapshotsByBasket[bAddr], s)
 			}
 		}
