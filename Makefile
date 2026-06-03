@@ -77,6 +77,7 @@ fmt:
 deploy:
 	forge script script/Deploy.s.sol:DeployWeave \
 		$(FORGE_FLAGS) \
+		--gas-estimate-multiplier 500 \
 		--slow
 
 .PHONY: verify
@@ -135,7 +136,7 @@ clean:
 # Usage: make router-withdraw-all
 .PHONY: router-withdraw-all
 router-withdraw-all:
-	cast send $(MOCK_SWAP_ROUTER_ADDRESS) \
+	cast send $(SWAP_ROUTER_ADDRESS) \
 		"withdrawAll(address[])" \
 		"[$(USDG_ADDRESS),$(TSLA_ADDRESS),$(AMZN_ADDRESS),$(PLTR_ADDRESS),$(NFLX_ADDRESS),$(AMD_ADDRESS)]" \
 		--rpc-url $(RPC_URL) \

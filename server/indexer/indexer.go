@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/big"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -184,31 +185,45 @@ func (idx *Indexer) syncAssets(client *ethclient.Client) {
 	}
 
 	unpacked, err := getSupportedAssetsABI.Methods["getSupportedAssets"].Outputs.Unpack(data)
-	if err != nil {
+	if err != nil || len(unpacked) == 0 {
 		log.Printf("indexer: getSupportedAssets unpack error: %v", err)
 		return
 	}
-	if len(unpacked) == 0 {
-		return
-	}
 
-	rawSlice, ok := unpacked[0].([]struct {
-		TokenAddress common.Address `abi:"tokenAddress"`
-		Oracle       common.Address `abi:"oracle"`
-		Symbol       string         `abi:"symbol"`
-		Name         string         `abi:"name"`
-		Sector       string         `abi:"sector"`
-		Active       bool           `abi:"active"`
-	})
-	if !ok {
-		log.Printf("indexer: syncAssets: unexpected type from ABI unpack")
+	// Use reflect to iterate the returned slice regardless of the
+	// runtime-generated anonymous struct type that ABI produces.
+	rv := reflect.ValueOf(unpacked[0])
+	if rv.Kind() != reflect.Slice {
+		log.Printf("indexer: syncAssets: expected slice, got %s", rv.Kind())
 		return
 	}
 
 	now := time.Now().Unix()
-	for _, a := range rawSlice {
-		token  := strings.ToLower(a.TokenAddress.Hex())
-		oracle := strings.ToLower(a.Oracle.Hex())
+	count := 0
+
+	for i := 0; i < rv.Len(); i++ {
+		elem := rv.Index(i)
+		if elem.Kind() == reflect.Ptr {
+			elem = elem.Elem()
+		}
+
+		tokenField  := elem.FieldByName("TokenAddress")
+		oracleField := elem.FieldByName("Oracle")
+		symbolField := elem.FieldByName("Symbol")
+		nameField   := elem.FieldByName("Name")
+		sectorField := elem.FieldByName("Sector")
+		activeField := elem.FieldByName("Active")
+
+		if !tokenField.IsValid() || !oracleField.IsValid() {
+			continue
+		}
+
+		token  := strings.ToLower(tokenField.Interface().(common.Address).Hex())
+		oracle := strings.ToLower(oracleField.Interface().(common.Address).Hex())
+		symbol := symbolField.String()
+		name   := nameField.String()
+		sector := sectorField.String()
+		active := boolToInt(activeField.Bool())
 
 		_, err := idx.db.Exec(`
 			INSERT INTO supported_assets (address, symbol, name, sector, oracle_address, is_active, added_at)
@@ -219,14 +234,16 @@ func (idx *Indexer) syncAssets(client *ethclient.Client) {
 				sector         = excluded.sector,
 				oracle_address = excluded.oracle_address,
 				is_active      = excluded.is_active`,
-			token, a.Symbol, a.Name, a.Sector, oracle, boolToInt(a.Active), now,
+			token, symbol, name, sector, oracle, active, now,
 		)
 		if err != nil {
 			log.Printf("indexer: syncAssets upsert %s: %v", token, err)
+		} else {
+			count++
 		}
 	}
 
-	log.Printf("indexer: synced %d assets from chain", len(rawSlice))
+	log.Printf("indexer: synced %d assets from chain", count)
 }
 
 func (idx *Indexer) syncBaskets(client *ethclient.Client) {
@@ -240,29 +257,38 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 	}
 
 	unpacked, err := getAllBasketsABI.Methods["getAllBaskets"].Outputs.Unpack(data)
-	if err != nil {
+	if err != nil || len(unpacked) == 0 {
 		log.Printf("indexer: getAllBaskets unpack error: %v", err)
 		return
 	}
-	if len(unpacked) == 0 {
+
+	rv := reflect.ValueOf(unpacked[0])
+	if rv.Kind() != reflect.Slice {
+		log.Printf("indexer: syncBaskets: expected slice, got %s", rv.Kind())
 		return
 	}
 
-	rawSlice, ok := unpacked[0].([]struct {
-		Basket       common.Address `abi:"basket"`
-		CreatorToken common.Address `abi:"creatorToken"`
-		Creator      common.Address `abi:"creator"`
-		Active       bool           `abi:"active"`
-		CreatedAt    *big.Int       `abi:"createdAt"`
-	})
-	if !ok {
-		log.Printf("indexer: syncBaskets: unexpected type from ABI unpack")
-		return
-	}
+	count := 0
 
-	for _, b := range rawSlice {
-		basket    := strings.ToLower(b.Basket.Hex())
-		createdAt := b.CreatedAt.Int64()
+	for i := 0; i < rv.Len(); i++ {
+		elem := rv.Index(i)
+		if elem.Kind() == reflect.Ptr {
+			elem = elem.Elem()
+		}
+
+		basketField       := elem.FieldByName("Basket")
+		creatorTokenField := elem.FieldByName("CreatorToken")
+		creatorField      := elem.FieldByName("Creator")
+		createdAtField    := elem.FieldByName("CreatedAt")
+
+		if !basketField.IsValid() || !creatorField.IsValid() {
+			continue
+		}
+
+		basket       := strings.ToLower(basketField.Interface().(common.Address).Hex())
+		creatorToken := strings.ToLower(creatorTokenField.Interface().(common.Address).Hex())
+		creator      := strings.ToLower(creatorField.Interface().(common.Address).Hex())
+		createdAt    := createdAtField.Interface().(*big.Int).Int64()
 
 		_, err := idx.db.Exec(`
 			INSERT INTO baskets
@@ -270,10 +296,7 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 				 rebalancing_enabled, created_at, created_tx, suspended)
 			VALUES (?, ?, ?, '', '', '', 0, ?, '', 0)
 			ON CONFLICT(address) DO NOTHING`,
-			basket,
-			strings.ToLower(b.CreatorToken.Hex()),
-			strings.ToLower(b.Creator.Hex()),
-			createdAt,
+			basket, creatorToken, creator, createdAt,
 		)
 		if err != nil {
 			log.Printf("indexer: syncBaskets upsert %s: %v", basket, err)
@@ -281,11 +304,12 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 		}
 
 		idx.mu.Lock()
-		idx.basketAddrs[b.Basket] = true
+		idx.basketAddrs[common.HexToAddress(basket)] = true
 		idx.mu.Unlock()
+		count++
 	}
 
-	log.Printf("indexer: synced %d baskets from chain", len(rawSlice))
+	log.Printf("indexer: synced %d baskets from chain", count)
 }
 
 // seedMissingConstituents fills constituent rows and basket metadata for any
@@ -896,7 +920,7 @@ func (idx *Indexer) subscribe() error {
 }
 
 func (idx *Indexer) newHTTPClient() (*ethclient.Client, error) {
-	rpcURL := os.Getenv("ALCHEMY_RPC_URL")
+	rpcURL := os.Getenv("RPC_URL")
 	if rpcURL == "" {
 		rpcURL = "https://rpc.testnet.chain.robinhood.com"
 	}
