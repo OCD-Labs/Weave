@@ -23,6 +23,7 @@ interface IWeaveRegistry {
 
     function addAsset(AssetConfig calldata config) external;
     function deactivateAsset(address token) external;
+    function reactivateAsset(address token) external;
     function assets(address token) external view returns (AssetConfig memory);
     function getSupportedAssets() external view returns (AssetConfig[] memory);
 

@@ -42,10 +42,7 @@ const openAPISpec = `{
             "description": "Array of active assets",
             "content": {
               "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": { "$ref": "#/components/schemas/CatalogueAsset" }
-                },
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/CatalogueAsset" } },
                 "example": [
                   {
                     "address": "0x71178bac73cbeb415514eb542a8995b82669778d",
@@ -68,7 +65,7 @@ const openAPISpec = `{
       "get": {
         "tags": ["Catalogue"],
         "summary": "Get a single asset",
-        "description": "Returns asset metadata. Note: currentPriceUsdg and priceChange24hPct are NOT returned on this endpoint — use GET /catalogue for price data.",
+        "description": "Returns asset metadata only. currentPriceUsdg and priceChange24hPct are NOT returned — use GET /catalogue for price data.",
         "operationId": "getCatalogueAsset",
         "parameters": [
           {
@@ -82,11 +79,7 @@ const openAPISpec = `{
         "responses": {
           "200": {
             "description": "Asset metadata",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/CatalogueAssetDetail" }
-              }
-            }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CatalogueAssetDetail" } } }
           },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
@@ -96,19 +89,12 @@ const openAPISpec = `{
       "get": {
         "tags": ["Catalogue"],
         "summary": "Latest oracle prices",
-        "description": "Returns the latest oracle price for assets that are constituents of at least one active basket. Assets not held by any basket are not returned. Returns an empty array before the first price poll cycle completes.",
+        "description": "Returns the latest oracle price for assets that are constituents of at least one active basket. Assets not held by any basket are not returned. Returns an empty array before the first price poll cycle (60 seconds after startup).",
         "operationId": "getPrices",
         "responses": {
           "200": {
             "description": "Latest prices",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": { "$ref": "#/components/schemas/PriceEntry" }
-                }
-              }
-            }
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/PriceEntry" } } } }
           }
         }
       }
@@ -122,14 +108,7 @@ const openAPISpec = `{
         "responses": {
           "200": {
             "description": "Array of baskets",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": { "$ref": "#/components/schemas/BasketSummary" }
-                }
-              }
-            }
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/BasketSummary" } } } }
           }
         }
       }
@@ -138,7 +117,7 @@ const openAPISpec = `{
       "get": {
         "tags": ["Baskets"],
         "summary": "Get basket detail",
-        "description": "Returns full basket detail including live constituent weights from the contract (cached 30 seconds), NAV history, deposit history, and rebalance history.",
+        "description": "Returns full basket detail. Constituent weights and balances come from a live contract basketState() call cached for 30 seconds. Note: constituents do not include per-constituent price data — cross-reference with GET /catalogue by address.",
         "operationId": "getBasket",
         "parameters": [
           {
@@ -152,11 +131,7 @@ const openAPISpec = `{
         "responses": {
           "200": {
             "description": "Basket detail",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/BasketDetail" }
-              }
-            }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BasketDetail" } } }
           },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
@@ -166,27 +141,15 @@ const openAPISpec = `{
       "get": {
         "tags": ["Baskets"],
         "summary": "NAV history time series",
-        "description": "Returns the full NAV per token history for a basket. Updated every 5 minutes by the backend NAV poller. Returns an empty array if the poller has not run yet.",
+        "description": "Returns the full NAV per token history. Updated every 5 minutes by the backend NAV poller. Returns an empty array if the poller has not run yet.",
         "operationId": "getBasketPerformance",
         "parameters": [
-          {
-            "name": "address",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string" }
-          }
+          { "name": "address", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
           "200": {
-            "description": "NAV history points ordered by timestamp ascending",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": { "$ref": "#/components/schemas/NavPoint" }
-                }
-              }
-            }
+            "description": "NAV history ordered by timestamp ascending",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/NavPoint" } } } }
           }
         }
       }
@@ -195,32 +158,16 @@ const openAPISpec = `{
       "get": {
         "tags": ["Baskets"],
         "summary": "Investor position in a basket",
-        "description": "Returns a wallet's position in a specific basket. Cost basis and PnL are computed from on-chain deposit and redemption event history. basketTokenBalance is the source of truth from event history — cross-check with a live contract balanceOf call for the redemption form.",
+        "description": "Returns a wallet's position in a specific basket. Cost basis and PnL are computed from on-chain deposit and redemption event history. Cross-check basketTokenBalance with a live contract balanceOf call for the redemption form.",
         "operationId": "getPosition",
         "parameters": [
-          {
-            "name": "address",
-            "in": "path",
-            "required": true,
-            "description": "Basket proxy contract address",
-            "schema": { "type": "string" }
-          },
-          {
-            "name": "wallet",
-            "in": "path",
-            "required": true,
-            "description": "Investor wallet address",
-            "schema": { "type": "string" }
-          }
+          { "name": "address", "in": "path", "required": true, "description": "Basket proxy contract address", "schema": { "type": "string" } },
+          { "name": "wallet",  "in": "path", "required": true, "description": "Investor wallet address", "schema": { "type": "string" } }
         ],
         "responses": {
           "200": {
             "description": "Investor position",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/InvestorPosition" }
-              }
-            }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InvestorPosition" } } }
           }
         }
       }
@@ -229,25 +176,15 @@ const openAPISpec = `{
       "get": {
         "tags": ["Portfolio"],
         "summary": "All positions for a wallet",
-        "description": "Returns a portfolio summary across all baskets for a wallet. Returns a valid response with empty positions array and zero totals when the wallet has no deposit history.",
+        "description": "Returns a portfolio summary across all baskets for a wallet. Returns a valid response with empty positions array and zero totals when the wallet has no deposit history — never 404.",
         "operationId": "getPortfolio",
         "parameters": [
-          {
-            "name": "wallet",
-            "in": "path",
-            "required": true,
-            "description": "Investor wallet address",
-            "schema": { "type": "string" }
-          }
+          { "name": "wallet", "in": "path", "required": true, "description": "Investor wallet address", "schema": { "type": "string" } }
         ],
         "responses": {
           "200": {
             "description": "Portfolio summary",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/PortfolioSummary" }
-              }
-            }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PortfolioSummary" } } }
           }
         }
       }
@@ -256,24 +193,15 @@ const openAPISpec = `{
       "get": {
         "tags": ["Creator"],
         "summary": "Creator dashboard",
-        "description": "Returns all baskets created by a wallet with revenue snapshot data and claimable amounts. creatorTokenBalance, totalCreatorTokenSupply, and ownershipPct are NOT returned — read these directly from the creator token contract.",
+        "description": "Returns all baskets created by a wallet with revenue snapshot data and claimable amounts. creatorTokenBalance, totalCreatorTokenSupply, and ownershipPct are NOT returned — read these directly from the creator token contract via balanceOf().",
         "operationId": "getCreatorDashboard",
         "parameters": [
-          {
-            "name": "wallet",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string" }
-          }
+          { "name": "wallet", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
           "200": {
             "description": "Creator dashboard. Returns empty baskets array when the wallet has created no baskets.",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/CreatorDashboard" }
-              }
-            }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatorDashboard" } } }
           }
         }
       }
@@ -296,11 +224,7 @@ const openAPISpec = `{
         "responses": {
           "200": {
             "description": "Revenue snapshot history",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/CreatorTokenHistory" }
-              }
-            }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatorTokenHistory" } } }
           }
         }
       }
@@ -309,53 +233,33 @@ const openAPISpec = `{
       "post": {
         "tags": ["AI"],
         "summary": "AI basket composition",
-        "description": "Submits a natural language investment thesis and returns an AI-generated basket composition proposal using OpenAI gpt-4.1-mini. No on-chain action is taken — the proposal is for human review before basket deployment. All constituent addresses are from the active catalogue. Weights sum to exactly 10000 bps.",
+        "description": "Submits a natural language investment thesis and returns an AI-generated basket composition proposal using OpenAI gpt-4.1-mini. No on-chain action is taken. All constituent addresses are from the active catalogue. Weights sum to exactly 10000 bps.",
         "operationId": "aiCompose",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": { "$ref": "#/components/schemas/ComposeRequest" },
-              "example": {
-                "thesis": "companies building the physical infrastructure for AI including data centres, power, and semiconductor manufacturing"
-              }
+              "example": { "thesis": "companies building the physical infrastructure for AI including data centres, power, and semiconductor manufacturing" }
             }
           }
         },
         "responses": {
           "200": {
             "description": "Basket composition proposal",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ComposeResponse" }
-              }
-            }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ComposeResponse" } } }
           },
           "400": {
             "description": "Thesis too short (minimum 20 characters) or invalid JSON body",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "thesis must be at least 20 characters" }
-              }
-            }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "thesis must be at least 20 characters" } } }
           },
           "502": {
             "description": "OpenAI API call failed or returned invalid JSON after retry",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
-              }
-            }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
           },
           "503": {
             "description": "Fewer than 3 active assets in catalogue — cannot compose a valid basket",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "not enough active assets in catalogue" }
-              }
-            }
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" }, "example": { "error": "not enough active assets in catalogue" } } }
           }
         }
       }
@@ -372,13 +276,13 @@ const openAPISpec = `{
           "sector":            { "type": "string", "example": "Technology" },
           "oracle":            { "type": "string", "description": "OracleAdapter contract address, lowercase" },
           "isActive":          { "type": "boolean" },
-          "currentPriceUsdg":  { "type": "string", "description": "Latest oracle price as raw uint256 string. 8-decimal (Chainlink convention). Divide by 1e8 for USD display.", "example": "49701000000" },
+          "currentPriceUsdg":  { "type": "string", "description": "8-decimal oracle price as raw uint256 string. Divide by 1e8 for USD display. e.g. '49701000000' = $497.01", "example": "49701000000" },
           "priceChange24hPct": { "type": "string", "description": "24h price change as formatted percentage string. '0.00' when insufficient history.", "example": "2.45" }
         }
       },
       "CatalogueAssetDetail": {
         "type": "object",
-        "description": "Single asset metadata. Does not include price data — use GET /catalogue for prices.",
+        "description": "Single asset metadata from GET /catalogue/:address. Does not include price data.",
         "properties": {
           "address":  { "type": "string" },
           "symbol":   { "type": "string" },
@@ -400,7 +304,7 @@ const openAPISpec = `{
       },
       "BasketConstituentSummary": {
         "type": "object",
-        "description": "Constituent as returned in the basket list endpoint",
+        "description": "Constituent as returned in GET /baskets list",
         "properties": {
           "symbol":          { "type": "string" },
           "targetWeightBps": { "type": "integer", "description": "Target weight in basis points, e.g. 5000 = 50%" },
@@ -409,7 +313,7 @@ const openAPISpec = `{
       },
       "BasketConstituentDetail": {
         "type": "object",
-        "description": "Constituent as returned in the basket detail endpoint. Weight fields are strings not integers.",
+        "description": "Constituent as returned in GET /baskets/:address. Weight fields are strings not integers.",
         "properties": {
           "address":          { "type": "string" },
           "symbol":           { "type": "string" },
@@ -429,17 +333,14 @@ const openAPISpec = `{
           "symbol":             { "type": "string", "example": "AIIB" },
           "thesis":             { "type": "string" },
           "rebalancingEnabled": { "type": "boolean" },
-          "driftThresholdBps":  { "type": "integer", "description": "Rebalance trigger threshold in basis points. 0 when rebalancingEnabled is false." },
+          "driftThresholdBps":  { "type": "integer", "description": "Rebalance trigger in bps. 0 when rebalancingEnabled is false." },
           "createdAt":          { "type": "integer", "description": "Unix timestamp of basket creation" },
           "suspended":          { "type": "boolean", "description": "True if a constituent was deactivated by governance. Basket cannot accept deposits." },
-          "navPerToken":        { "type": "string", "description": "Current NAV per basket token as 18-decimal uint256 string" },
-          "totalValueUsdg":     { "type": "string", "description": "Total AUM as 6-decimal USDG uint256 string" },
-          "navChange24hPct":    { "type": "string", "description": "24h NAV change as formatted percentage string. '0.00' when insufficient history." },
+          "navPerToken":        { "type": "string", "description": "Current NAV per basket token, 18-decimal USDG uint256 string" },
+          "totalValueUsdg":     { "type": "string", "description": "Total AUM, 6-decimal USDG uint256 string" },
+          "navChange24hPct":    { "type": "string", "description": "24h NAV change as percentage string. '0.00' when insufficient history." },
           "constituentCount":   { "type": "integer" },
-          "constituents": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/BasketConstituentSummary" }
-          }
+          "constituents":       { "type": "array", "items": { "$ref": "#/components/schemas/BasketConstituentSummary" } }
         }
       },
       "BasketDetail": {
@@ -460,25 +361,12 @@ const openAPISpec = `{
           "navChange24hPct":    { "type": "string" },
           "navChange7dPct":     { "type": "string" },
           "navChange30dPct":    { "type": "string" },
-          "maxDriftBps":        { "type": "integer", "description": "Current maximum drift in basis points across all constituents" },
-          "needsRebalancing":   { "type": "boolean", "description": "True when maxDriftBps exceeds driftThresholdBps. Always false for static baskets." },
-          "constituents": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/BasketConstituentDetail" }
-          },
-          "performanceHistory": {
-            "type": "array",
-            "description": "NAV history ordered by timestamp ascending. Empty array before first NAV poll.",
-            "items": { "$ref": "#/components/schemas/NavPoint" }
-          },
-          "rebalanceHistory": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/RebalanceEvent" }
-          },
-          "depositHistory": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/DepositEvent" }
-          }
+          "maxDriftBps":        { "type": "integer", "description": "Current maximum drift across all constituents in bps" },
+          "needsRebalancing":   { "type": "boolean", "description": "True when maxDriftBps >= driftThresholdBps. Always false for static or suspended baskets." },
+          "constituents":       { "type": "array", "items": { "$ref": "#/components/schemas/BasketConstituentDetail" } },
+          "performanceHistory": { "type": "array", "description": "NAV history ordered by timestamp ascending. Empty array before first NAV poll (5 minutes after basket creation).", "items": { "$ref": "#/components/schemas/NavPoint" } },
+          "rebalanceHistory":   { "type": "array", "items": { "$ref": "#/components/schemas/RebalanceEvent" } },
+          "depositHistory":     { "type": "array", "items": { "$ref": "#/components/schemas/DepositEvent" } }
         }
       },
       "NavPoint": {
@@ -501,7 +389,7 @@ const openAPISpec = `{
         "type": "object",
         "properties": {
           "investor":           { "type": "string", "description": "Investor wallet address" },
-          "usdgAmount":         { "type": "string", "description": "6-decimal USDG deposited" },
+          "usdgAmount":         { "type": "string", "description": "6-decimal USDG deposited (before fee)" },
           "basketTokensMinted": { "type": "string", "description": "18-decimal basket tokens minted" },
           "timestamp":          { "type": "integer" },
           "txHash":             { "type": "string" }
@@ -512,10 +400,10 @@ const openAPISpec = `{
         "properties": {
           "basketAddress":      { "type": "string" },
           "walletAddress":      { "type": "string" },
-          "basketTokenBalance": { "type": "string", "description": "18-decimal basket token balance computed from event history" },
+          "basketTokenBalance": { "type": "string", "description": "18-decimal basket token balance computed from deposit/redemption event history" },
           "currentValueUsdg":   { "type": "string", "description": "6-decimal current value = basketTokenBalance * navPerToken / 1e18" },
-          "totalDepositedUsdg": { "type": "string", "description": "6-decimal sum of all USDG deposited by this wallet" },
-          "unrealisedPnlUsdg":  { "type": "string", "description": "6-decimal unrealised PnL. May be negative." },
+          "totalDepositedUsdg": { "type": "string", "description": "6-decimal sum of all USDG deposited by this wallet (before fees)" },
+          "unrealisedPnlUsdg":  { "type": "string", "description": "6-decimal unrealised PnL = currentValueUsdg - totalDepositedUsdg. May be negative." },
           "unrealisedPnlPct":   { "type": "string", "description": "Formatted percentage string e.g. '-0.80'" }
         }
       },
@@ -543,17 +431,14 @@ const openAPISpec = `{
           "totalDepositedUsdg":     { "type": "string", "description": "Sum of all position cost bases" },
           "totalUnrealisedPnlUsdg": { "type": "string" },
           "totalUnrealisedPnlPct":  { "type": "string" },
-          "positions": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/PortfolioPosition" }
-          }
+          "positions":              { "type": "array", "items": { "$ref": "#/components/schemas/PortfolioPosition" } }
         }
       },
       "RevenueSnapshot": {
         "type": "object",
         "properties": {
-          "snapshotId": { "type": "integer" },
-          "usdgAmount": { "type": "string", "description": "6-decimal USDG in this snapshot" },
+          "snapshotId": { "type": "integer", "description": "Monotonically increasing ID starting at 1" },
+          "usdgAmount": { "type": "string", "description": "6-decimal USDG added to revenue pool at this snapshot" },
           "timestamp":  { "type": "integer" },
           "txHash":     { "type": "string" }
         }
@@ -561,29 +446,23 @@ const openAPISpec = `{
       "UnclaimedSnapshot": {
         "type": "object",
         "properties": {
-          "snapshotId":      { "type": "integer" },
-          "usdgAmount":      { "type": "string" },
-          "timestamp":       { "type": "integer" },
-          "claimableByWallet": { "type": "string", "description": "6-decimal USDG claimable by the queried wallet proportional to their creator token balance" }
+          "snapshotId":        { "type": "integer" },
+          "usdgAmount":        { "type": "string", "description": "Total USDG in this snapshot" },
+          "timestamp":         { "type": "integer" },
+          "claimableByWallet": { "type": "string", "description": "6-decimal USDG claimable by the queried wallet, proportional to their creator token balance at the snapshot block" }
         }
       },
       "CreatorBasket": {
         "type": "object",
         "properties": {
-          "basketAddress":      { "type": "string" },
-          "basketName":         { "type": "string" },
-          "basketSymbol":       { "type": "string" },
+          "basketAddress":       { "type": "string" },
+          "basketName":          { "type": "string" },
+          "basketSymbol":        { "type": "string" },
           "creatorTokenAddress": { "type": "string" },
-          "totalValueUsdg":     { "type": "string" },
-          "totalClaimableUsdg": { "type": "string", "description": "Sum of claimableByWallet across all unclaimed snapshots" },
-          "unclaimedSnapshots": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/UnclaimedSnapshot" }
-          },
-          "revenueHistory": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/RevenueSnapshot" }
-          }
+          "totalValueUsdg":      { "type": "string" },
+          "totalClaimableUsdg":  { "type": "string", "description": "Sum of claimableByWallet across all unclaimedSnapshots" },
+          "unclaimedSnapshots":  { "type": "array", "items": { "$ref": "#/components/schemas/UnclaimedSnapshot" } },
+          "revenueHistory":      { "type": "array", "items": { "$ref": "#/components/schemas/RevenueSnapshot" } }
         }
       },
       "CreatorDashboard": {
@@ -591,21 +470,15 @@ const openAPISpec = `{
         "properties": {
           "walletAddress":      { "type": "string" },
           "totalClaimableUsdg": { "type": "string", "description": "Sum of totalClaimableUsdg across all creator baskets" },
-          "baskets": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/CreatorBasket" }
-          }
+          "baskets":            { "type": "array", "items": { "$ref": "#/components/schemas/CreatorBasket" } }
         }
       },
       "CreatorTokenHistory": {
         "type": "object",
         "properties": {
           "creatorTokenAddress": { "type": "string" },
-          "totalRevenueUsdg":    { "type": "string", "description": "Cumulative USDG distributed across all snapshots" },
-          "snapshots": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/RevenueSnapshot" }
-          }
+          "totalRevenueUsdg":    { "type": "string", "description": "Cumulative 6-decimal USDG distributed across all snapshots" },
+          "snapshots":           { "type": "array", "items": { "$ref": "#/components/schemas/RevenueSnapshot" } }
         }
       },
       "ComposeRequest": {
@@ -615,7 +488,7 @@ const openAPISpec = `{
           "thesis": {
             "type": "string",
             "minLength": 20,
-            "description": "Natural language investment thesis describing the thematic exposure to create",
+            "description": "Natural language investment thesis",
             "example": "companies building the physical infrastructure for AI including data centres, power, and semiconductor manufacturing"
           }
         }
@@ -627,7 +500,7 @@ const openAPISpec = `{
           "symbol":           { "type": "string" },
           "name":             { "type": "string" },
           "sector":           { "type": "string" },
-          "weightBps":        { "type": "integer", "minimum": 100, "maximum": 5000, "description": "Target weight in basis points. All constituents sum to exactly 10000." },
+          "weightBps":        { "type": "integer", "minimum": 100, "maximum": 5000, "description": "Target weight in bps. All constituents sum to exactly 10000." },
           "rationale":        { "type": "string", "description": "One sentence explaining why this stock fits the thesis" },
           "currentPriceUsdg": { "type": "string", "description": "8-decimal oracle price at time of composition" }
         }
@@ -635,15 +508,10 @@ const openAPISpec = `{
       "ComposeResponse": {
         "type": "object",
         "properties": {
-          "constituents": {
-            "type": "array",
-            "minItems": 3,
-            "maxItems": 12,
-            "items": { "$ref": "#/components/schemas/ComposeConstituent" }
-          },
+          "constituents":     { "type": "array", "minItems": 3, "maxItems": 12, "items": { "$ref": "#/components/schemas/ComposeConstituent" } },
           "overallRationale": { "type": "string", "description": "2-3 sentences explaining the basket construction logic" },
           "riskNotes":        { "type": "string", "description": "1-2 sentences noting key risks or concentration exposures" },
-          "provider":         { "type": "string", "description": "Model identifier that served this response", "example": "openai/gpt-4.1-mini" }
+          "provider":         { "type": "string", "description": "Model identifier", "example": "openai/gpt-4.1-mini" }
         }
       },
       "Error": {
@@ -668,7 +536,6 @@ const openAPISpec = `{
 }`
 
 // swaggerHTML is a self-contained Swagger UI page served at GET /docs.
-// Uses unpkg CDN for swagger-ui-dist@5.11.0 — no build step required.
 const swaggerHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -679,139 +546,32 @@ const swaggerHTML = `<!DOCTYPE html>
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; background: #0f0f0f; }
-
     .topbar { display: none !important; }
-
-    #swagger-ui .swagger-ui {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-
-    .swagger-ui .info .title {
-      color: #ffffff;
-      font-size: 2rem;
-      font-weight: 700;
-    }
-
-    .swagger-ui .info .description p {
-      color: #aaaaaa;
-    }
-
-    .swagger-ui .scheme-container {
-      background: #1a1a1a;
-      box-shadow: none;
-      border-bottom: 1px solid #2a2a2a;
-      padding: 16px 0;
-    }
-
-    .swagger-ui .opblock-tag {
-      color: #ffffff;
-      border-bottom: 1px solid #2a2a2a;
-    }
-
-    .swagger-ui .opblock-tag:hover {
-      background: #1a1a1a;
-    }
-
-    .swagger-ui .opblock.opblock-get .opblock-summary-method {
-      background: #1d4e89;
-    }
-
-    .swagger-ui .opblock.opblock-post .opblock-summary-method {
-      background: #1e6b3e;
-    }
-
-    .swagger-ui .opblock {
-      border: 1px solid #2a2a2a;
-      border-radius: 6px;
-      margin: 6px 0;
-      background: #1a1a1a;
-    }
-
-    .swagger-ui .opblock .opblock-summary {
-      border-bottom: none;
-    }
-
-    .swagger-ui .opblock.opblock-get {
-      border-color: #1d4e89;
-      background: rgba(29, 78, 137, 0.08);
-    }
-
-    .swagger-ui .opblock.opblock-post {
-      border-color: #1e6b3e;
-      background: rgba(30, 107, 62, 0.08);
-    }
-
-    .swagger-ui .opblock .opblock-summary-description {
-      color: #cccccc;
-    }
-
-    .swagger-ui .opblock-body pre.microlight {
-      background: #0f0f0f;
-      color: #e0e0e0;
-    }
-
-    .swagger-ui section.models {
-      border: 1px solid #2a2a2a;
-      border-radius: 6px;
-    }
-
-    .swagger-ui section.models h4 {
-      color: #ffffff;
-    }
-
-    .swagger-ui .model-title {
-      color: #ffffff;
-    }
-
-    .swagger-ui .btn.execute {
-      background: #6c47ff;
-      border-color: #6c47ff;
-      color: #ffffff;
-    }
-
-    .swagger-ui .btn.execute:hover {
-      background: #5835e0;
-    }
-
-    .swagger-ui .btn.btn-clear {
-      color: #aaaaaa;
-      border-color: #444444;
-    }
-
-    #weave-header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 20px 32px;
-      background: #0f0f0f;
-      border-bottom: 1px solid #2a2a2a;
-    }
-
-    #weave-header .logo {
-      font-size: 1.4rem;
-      font-weight: 800;
-      color: #ffffff;
-      letter-spacing: -0.5px;
-    }
-
-    #weave-header .logo span {
-      color: #6c47ff;
-    }
-
-    #weave-header .badge {
-      font-size: 0.7rem;
-      padding: 2px 8px;
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 999px;
-      color: #888888;
-    }
-
-    #weave-header .chain {
-      margin-left: auto;
-      font-size: 0.75rem;
-      color: #666666;
-    }
+    #swagger-ui .swagger-ui { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+    .swagger-ui .info .title { color: #ffffff; font-size: 2rem; font-weight: 700; }
+    .swagger-ui .info .description p { color: #aaaaaa; }
+    .swagger-ui .scheme-container { background: #1a1a1a; box-shadow: none; border-bottom: 1px solid #2a2a2a; padding: 16px 0; }
+    .swagger-ui .opblock-tag { color: #ffffff; border-bottom: 1px solid #2a2a2a; }
+    .swagger-ui .opblock-tag:hover { background: #1a1a1a; }
+    .swagger-ui .opblock.opblock-get .opblock-summary-method { background: #1d4e89; }
+    .swagger-ui .opblock.opblock-post .opblock-summary-method { background: #1e6b3e; }
+    .swagger-ui .opblock { border: 1px solid #2a2a2a; border-radius: 6px; margin: 6px 0; background: #1a1a1a; }
+    .swagger-ui .opblock .opblock-summary { border-bottom: none; }
+    .swagger-ui .opblock.opblock-get { border-color: #1d4e89; background: rgba(29, 78, 137, 0.08); }
+    .swagger-ui .opblock.opblock-post { border-color: #1e6b3e; background: rgba(30, 107, 62, 0.08); }
+    .swagger-ui .opblock .opblock-summary-description { color: #cccccc; }
+    .swagger-ui .opblock-body pre.microlight { background: #0f0f0f; color: #e0e0e0; }
+    .swagger-ui section.models { border: 1px solid #2a2a2a; border-radius: 6px; }
+    .swagger-ui section.models h4 { color: #ffffff; }
+    .swagger-ui .model-title { color: #ffffff; }
+    .swagger-ui .btn.execute { background: #6c47ff; border-color: #6c47ff; color: #ffffff; }
+    .swagger-ui .btn.execute:hover { background: #5835e0; }
+    .swagger-ui .btn.btn-clear { color: #aaaaaa; border-color: #444444; }
+    #weave-header { display: flex; align-items: center; gap: 12px; padding: 20px 32px; background: #0f0f0f; border-bottom: 1px solid #2a2a2a; }
+    #weave-header .logo { font-size: 1.4rem; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; }
+    #weave-header .logo span { color: #6c47ff; }
+    #weave-header .badge { font-size: 0.7rem; padding: 2px 8px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 999px; color: #888888; }
+    #weave-header .chain { margin-left: auto; font-size: 0.75rem; color: #666666; }
   </style>
 </head>
 <body>
@@ -821,9 +581,7 @@ const swaggerHTML = `<!DOCTYPE html>
     <div class="badge">Robinhood Chain Testnet · 46630</div>
     <div class="chain">Onchain Index Protocol for Tokenized Equities</div>
   </div>
-
   <div id="swagger-ui"></div>
-
   <script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-bundle.js" crossorigin></script>
   <script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-standalone-preset.js" crossorigin></script>
   <script>
@@ -832,13 +590,8 @@ const swaggerHTML = `<!DOCTYPE html>
         url: '/openapi.json',
         dom_id: '#swagger-ui',
         deepLinking: true,
-        presets: [
-          SwaggerUIBundle.presets.apis,
-          SwaggerUIBundle.SwaggerUIStandalonePreset
-        ],
-        plugins: [
-          SwaggerUIBundle.plugins.DownloadUrl
-        ],
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+        plugins: [SwaggerUIBundle.plugins.DownloadUrl],
         layout: 'BaseLayout',
         defaultModelsExpandDepth: 1,
         defaultModelExpandDepth: 2,

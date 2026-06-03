@@ -94,6 +94,7 @@ contract WeaveRegistry is IWeaveRegistry {
     event MinRebalanceTradeSizeUpdated(uint256 size);
     event MaxSwapSlippageUpdated(uint256 bps);
     event OracleStalenessSecs(uint256 secs);
+    event AssetReactivated(address indexed token);
 
     modifier onlyGovernance() {
         if (msg.sender != governance) revert NotGovernance();
@@ -176,6 +177,12 @@ contract WeaveRegistry is IWeaveRegistry {
         if (_assets[token].tokenAddress == address(0)) revert AssetNotFound(token);
         _assets[token].active = false;
         emit AssetDeactivated(token);
+    }
+
+    function reactivateAsset(address token) external onlyGovernance {
+        if (_assets[token].tokenAddress == address(0)) revert AssetNotFound(token);
+        _assets[token].active = true;
+        emit AssetReactivated(token);
     }
 
     function assets(address token)

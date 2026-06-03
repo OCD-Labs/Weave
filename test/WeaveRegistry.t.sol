@@ -152,6 +152,30 @@ contract WeaveRegistryTest is Test {
         assertFalse(registry.assets(token).active);
     }
 
+    function test_reactivateAsset() public {
+        vm.startPrank(governance);
+        registry.addAsset(IWeaveRegistry.AssetConfig({
+            tokenAddress: token,
+            oracle:       address(oracle),
+            symbol:       "TEST",
+            name:         "Test",
+            sector:       "Tech",
+            active:       true
+        }));
+        registry.deactivateAsset(token);
+        assertFalse(registry.assets(token).active);
+    
+        registry.reactivateAsset(token);
+        assertTrue(registry.assets(token).active);
+        vm.stopPrank();
+    }
+    
+    function test_reactivateAsset_NotFound_Reverts() public {
+        vm.prank(governance);
+        vm.expectRevert(abi.encodeWithSelector(WeaveRegistry.AssetNotFound.selector, address(0xdead)));
+        registry.reactivateAsset(address(0xdead));
+    }
+
     function test_getSupportedAssets() public {
         address token2  = makeAddr("token2");
         OracleAdapter oracle2 = new OracleAdapter("TEST2 / USD", 200_00000000);
