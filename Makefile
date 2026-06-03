@@ -107,26 +107,6 @@ go-fuzz:
 	cd server && go test ./indexer -fuzz=FuzzDecodeAssetAddedData -fuzztime=30s
 	cd server && go test ./indexer -fuzz=FuzzDecodeBigIntFromLogData -fuzztime=30s
 
-.PHONY: ts-install
-ts-install:
-	npm install
-
-.PHONY: ts-build
-ts-build:
-	npm run build
-
-.PHONY: ts-dev
-ts-dev:
-	npm run dev
-
-.PHONY: ts-typecheck
-ts-typecheck:
-	npm run typecheck
-
-.PHONY: ts-test
-ts-test:
-	npm test
-
 .PHONY: clean
 clean:
 	forge clean
