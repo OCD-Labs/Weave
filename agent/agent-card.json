@@ -6,8 +6,8 @@
   "services": [
     {
       "type": "https",
-      "url": "https://weave-agent.up.railway.app",
-      "description": "POST /compose with a thesis string to receive a basket proposal"
+      "url": "https://weave.up.railway.app/ai/compose",
+      "description": "POST /ai/compose with a thesis string to receive a basket proposal"
     },
     {
       "type": "api",

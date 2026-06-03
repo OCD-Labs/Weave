@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -11,27 +10,27 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/OCD-Labs/Weave/server/api"
 	"github.com/OCD-Labs/Weave/server/db"
 	"github.com/OCD-Labs/Weave/server/indexer"
+	"github.com/OCD-Labs/Weave/server/nav"
 	"github.com/OCD-Labs/Weave/server/prices"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	// Load .env if present — silently ignored in production where env vars are injected directly.
 	_ = godotenv.Load()
 
 	dbPath := envOrDefault("DB_PATH", "./weave.db")
-	rpcURL := mustEnv("ALCHEMY_RPC_URL")
-	wsURL  := mustEnv("ALCHEMY_WS_URL")
+	rpcURL := envOrDefault("RPC_URL", "https://rpc.testnet.chain.robinhood.com")
+	wsURL := mustEnv("ALCHEMY_WS_URL")
+	registryAddr := mustEnv("WEAVE_REGISTRY_ADDRESS")
+	apiPort := envOrDefault("API_PORT", "8080")
 
-	registryAddr    := mustEnv("WEAVE_REGISTRY_ADDRESS")
-	apiPort         := envOrDefault("API_PORT", "8080")
-	aiServicePort   := envOrDefault("AI_SERVICE_PORT", "3001")
 	pollIntervalSec := envOrDefaultInt("PRICE_POLL_INTERVAL_SECS", 60)
+	navIntervalSec := envOrDefaultInt("NAV_POLL_INTERVAL_SECS", 300)
+	deployBlock := envOrDefaultInt64("DEPLOY_BLOCK", 65989689)
 
-	// Open (or create) the SQLite database and apply schema migrations.
 	database, err := db.Open(dbPath)
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
@@ -41,21 +40,22 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start the event indexer — subscribes to all registry and basket events.
-	idx, err := indexer.New(ctx, wsURL, rpcURL, registryAddr, database)
+	idx, err := indexer.New(ctx, wsURL, rpcURL, registryAddr, deployBlock, database)
 	if err != nil {
 		log.Fatalf("failed to start indexer: %v", err)
 	}
 	go idx.Run()
 
-	// Start the price polling goroutine — reads mock oracles every pollIntervalSec.
 	poller := prices.NewPoller(rpcURL, registryAddr, database, time.Duration(pollIntervalSec)*time.Second)
 	go poller.Run(ctx)
 
-	// Start the HTTP API server.
-	aiBaseURL := envOrDefault("AI_BASE_URL", fmt.Sprintf("http://localhost:%s", aiServicePort))
-	agentAPIKey := os.Getenv("AGENT_API_KEY")
-	handler   := api.NewRouter(database, aiBaseURL, agentAPIKey)
+	navPoller := nav.NewPoller(rpcURL, database, time.Duration(navIntervalSec)*time.Second)
+	go navPoller.Run(ctx)
+
+	openAIKey := mustEnv("OPENAI_API_KEY")
+	openAIModel := envOrDefault("OPENAI_MODEL", "gpt-4.1-mini")
+
+	handler := api.NewRouter(database, openAIKey, openAIModel)
 
 	srv := &http.Server{
 		Addr:         ":" + apiPort,
@@ -72,7 +72,6 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown on SIGINT or SIGTERM.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -103,6 +102,15 @@ func envOrDefault(key, def string) string {
 func envOrDefaultInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func envOrDefaultInt64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return n
 		}
 	}
