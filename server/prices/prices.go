@@ -76,15 +76,10 @@ func (p *Poller) poll(ctx context.Context) {
 	}
 	defer client.Close()
 
-	// Only poll assets that are constituents of at least one active basket.
-	// This eliminates polling overhead for catalogue assets that no basket holds,
-	// and keeps price_history focused on data the frontend actually queries.
 	rows, err := p.db.Query(`
-		SELECT DISTINCT sa.address, sa.oracle_address
-		FROM supported_assets sa
-		INNER JOIN basket_constituents bc ON bc.stock_address = sa.address
-		INNER JOIN baskets b ON b.address = bc.basket_address AND b.suspended = 0
-		WHERE sa.is_active = 1`,
+	    SELECT address, oracle_address
+	    FROM supported_assets
+	    WHERE is_active = 1`,
 	)
 	if err != nil {
 		log.Printf("prices: db query error: %v", err)
@@ -125,7 +120,7 @@ func (p *Poller) poll(ctx context.Context) {
 		}
 	}
 
-	log.Printf("prices: polled %d active constituent assets", len(assets))
+	log.Printf("prices: polled %d active assets", len(assets))
 }
 
 // readOraclePrice calls latestRoundData() on the oracle contract and returns
