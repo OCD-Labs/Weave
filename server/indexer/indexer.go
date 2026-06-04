@@ -528,9 +528,12 @@ func (idx *Indexer) scanTransactionalEvents() {
 
 	log.Printf("indexer: scanning transactional events blocks %d → %d", fromBlock, toBlock)
 
+	factoryAddr := common.HexToAddress(os.Getenv("BASKET_FACTORY_ADDRESS"))
+
 	idx.mu.RLock()
-	addresses := make([]common.Address, 0, len(idx.basketAddrs)+1)
+	addresses := make([]common.Address, 0, len(idx.basketAddrs)+2)
 	addresses = append(addresses, idx.registryAddr)
+	addresses = append(addresses, factoryAddr)
 	for addr := range idx.basketAddrs {
 		addresses = append(addresses, addr)
 	}
@@ -549,6 +552,7 @@ func (idx *Indexer) scanTransactionalEvents() {
 			ToBlock:   big.NewInt(end),
 			Addresses: addresses,
 			Topics: [][]common.Hash{{
+				topicBasketCreated,
 				topicDeposited,
 				topicRedeemed,
 				topicRebalanced,
@@ -562,9 +566,6 @@ func (idx *Indexer) scanTransactionalEvents() {
 			return
 		}
 
-		// Process all logs in this chunk. Collect write errors. If any write
-		// fails, stop scanning without advancing the cursor — the next startup
-		// will re-scan this chunk from the last committed cursor position.
 		chunkErr := false
 		for _, vLog := range logs {
 			if err := idx.handleLogErr(vLog); err != nil {
@@ -593,6 +594,9 @@ func (idx *Indexer) handleLogErr(vLog types.Log) error {
 		return nil
 	}
 	switch vLog.Topics[0] {
+	case topicBasketCreated:
+		idx.handleBasketCreated(vLog)
+		return nil
 	case topicDeposited:
 		return idx.handleDeposited(vLog)
 	case topicRedeemed:
@@ -877,9 +881,12 @@ func (idx *Indexer) subscribe() error {
 	}
 	defer client.Close()
 
+	factoryAddr := common.HexToAddress(os.Getenv("BASKET_FACTORY_ADDRESS"))
+
 	idx.mu.RLock()
-	addresses := make([]common.Address, 0, len(idx.basketAddrs)+1)
+	addresses := make([]common.Address, 0, len(idx.basketAddrs)+2)
 	addresses = append(addresses, idx.registryAddr)
+	addresses = append(addresses, factoryAddr)
 	for addr := range idx.basketAddrs {
 		addresses = append(addresses, addr)
 	}
