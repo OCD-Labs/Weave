@@ -212,7 +212,7 @@ contract WeaveRegistry is IWeaveRegistry {
     /// Returns the full Chainlink-compatible round data shape so the same
     /// interface works on both testnet (OracleAdapter) and mainnet
     /// (direct Chainlink AggregatorV3Interface). Reverts on stale or
-    /// non-positive prices — no silent mis-pricing ever.
+    /// non-positive prices.
     function getAssetPrice(address token)
         external
         view

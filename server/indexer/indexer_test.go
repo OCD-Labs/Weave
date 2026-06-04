@@ -10,11 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-// ── Topic hash correctness ────────────────────────────────────────────────────
-
 func TestEventTopicHash_AssetAdded(t *testing.T) {
-	// AssetAdded signature changed in robustness-2 to include name and oracle.
-	// This hash must match what the deployed contract emits.
 	hash := topicAssetAdded.Hex()
 	if !strings.HasPrefix(hash, "0x") || len(hash) != 66 {
 		t.Errorf("AssetAdded topic hash invalid format: %s", hash)
@@ -22,8 +18,6 @@ func TestEventTopicHash_AssetAdded(t *testing.T) {
 }
 
 func TestEventTopicHash_BasketCreated(t *testing.T) {
-	// BasketCreated signature changed in robustness-2 to include name, symbol,
-	// thesis, constituents[], targetWeightsBps[], rebalancingEnabled.
 	hash := topicBasketCreated.Hex()
 	if !strings.HasPrefix(hash, "0x") || len(hash) != 66 {
 		t.Errorf("BasketCreated topic hash invalid format: %s", hash)
@@ -58,11 +52,6 @@ func TestEventTopicHash_AllDistinct(t *testing.T) {
 	}
 }
 
-// ── AssetAdded log decoding ───────────────────────────────────────────────────
-
-// buildAssetAddedLog constructs a synthetic AssetAdded log matching the
-// robustness-2 event: AssetAdded(address indexed token, string symbol,
-// string name, string sector, address oracle)
 func buildAssetAddedLog(token, oracle common.Address, symbol, name, sector string) types.Log {
 	data, _ := assetAddedABI.Pack(symbol, name, sector, oracle)
 
@@ -160,11 +149,6 @@ func TestDecodeAssetAddedLog_MalformedData(t *testing.T) {
 	}
 }
 
-// ── BasketCreated log decoding ────────────────────────────────────────────────
-
-// buildBasketCreatedLog constructs a synthetic BasketCreated log matching the
-// robustness-2 enriched event: name, symbol, thesis, constituents[],
-// targetWeightsBps[], rebalancingEnabled in the data field.
 func buildBasketCreatedLog(
 	basket, creatorToken, creator common.Address,
 	name, symbol, thesis string,
@@ -305,8 +289,6 @@ func TestDecodeBasketCreatedLog_MalformedData(t *testing.T) {
 	}
 }
 
-// ── Deposited log decoding ────────────────────────────────────────────────────
-
 func buildDepositedLog(investor common.Address, usdgAmount, tokensMinted, feeUsdg *big.Int) types.Log {
 	data := make([]byte, 96)
 	copy(data[0:32], common.LeftPadBytes(usdgAmount.Bytes(), 32))
@@ -374,8 +356,6 @@ func TestDecodeDepositedLog_InvestorAddress(t *testing.T) {
 	}
 }
 
-// ── Redeemed log decoding ─────────────────────────────────────────────────────
-
 func buildRedeemedLog(investor common.Address, tokensBurned, usdgReturned, feeUsdg *big.Int) types.Log {
 	data := make([]byte, 96)
 	copy(data[0:32], common.LeftPadBytes(tokensBurned.Bytes(), 32))
@@ -416,8 +396,6 @@ func TestDecodeRedeemedLog_Amounts(t *testing.T) {
 		t.Errorf("fee: expected %s, got %s", feeUsdg, gotFee)
 	}
 }
-
-// ── FeeSnapshot log decoding ──────────────────────────────────────────────────
 
 func buildFeeSnapshotLog(basketAddr common.Address, snapshotID int64, usdgAmount *big.Int) types.Log {
 	data := make([]byte, 32)
@@ -462,8 +440,6 @@ func TestDecodeFeeSnapshotLog(t *testing.T) {
 		t.Errorf("usdgAmount: expected %s, got %s", usdgAmount, gotAmount)
 	}
 }
-
-// ── Utility function tests ────────────────────────────────────────────────────
 
 func TestBoolToInt(t *testing.T) {
 	if boolToInt(true) != 1 {
@@ -511,8 +487,6 @@ func TestEventTopic_DeterministicHash(t *testing.T) {
 		t.Error("different signatures should produce different hashes")
 	}
 }
-
-// ── Fuzz tests ────────────────────────────────────────────────────────────────
 
 // FuzzDecodeAssetAddedData confirms the enriched AssetAdded ABI decoder
 // never panics on arbitrary input.

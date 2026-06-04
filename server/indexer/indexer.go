@@ -313,10 +313,7 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 }
 
 // seedMissingConstituents fills constituent rows and basket metadata for any
-// basket that has zero constituent rows. Uses a paginated loop — never more
-// than 50 addresses in memory at once. Since successfully seeded baskets drop
-// out of the WHERE NOT EXISTS condition, the query always uses OFFSET 0 and
-// the result set shrinks naturally as work completes.
+// basket that has zero constituent rows. 
 func (idx *Indexer) seedMissingConstituents() {
 	const pageSize = 50
 	const workers  = 5
@@ -377,8 +374,6 @@ func (idx *Indexer) seedMissingConstituents() {
 }
 
 // seedOneBasket calls basketState() once plus name/symbol/thesis — 4 RPC calls total.
-// rebalancingEnabled and driftThresholdBps come from basketState() output directly,
-// eliminating the two separate calls the previous version made.
 func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) {
 	addr := common.HexToAddress(basketAddr)
 
@@ -430,8 +425,7 @@ func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) {
 	thesis := callMeta("thesis")
 
 	// Look up constituent symbols from supported_assets BEFORE opening the
-	// write transaction — reading the DB inside an open write transaction
-	// causes lock contention in SQLite under Go's database/sql.
+	// write transaction.
 	type constituentRow struct {
 		addr   string
 		symbol string
@@ -500,9 +494,7 @@ func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) {
 }
 
 // scanTransactionalEvents performs a cursor-based block scan for deposits,
-// redemptions, rebalances, and fee snapshots. The cursor only advances after
-// all logs in a chunk are confirmed written — a partially processed chunk
-// leaves the cursor unchanged so the next startup re-scans it cleanly.
+// redemptions, rebalances, and fee snapshots.
 func (idx *Indexer) scanTransactionalEvents() {
 	client, err := idx.newHTTPClient()
 	if err != nil {
@@ -586,7 +578,6 @@ func (idx *Indexer) scanTransactionalEvents() {
 			return
 		}
 
-		// All logs in this chunk written successfully — advance cursor.
 		_, _ = idx.db.Exec(
 			`UPDATE sync_cursors SET block_num = ? WHERE key = 'events'`, end,
 		)
@@ -648,8 +639,6 @@ func (idx *Indexer) handleLog(vLog types.Log) {
 	}
 }
 
-// handleBasketCreated decodes all fields from the enriched event log.
-// Constituent symbol lookups happen before the write transaction opens.
 func (idx *Indexer) handleBasketCreated(vLog types.Log) {
 	if len(vLog.Topics) < 4 {
 		return

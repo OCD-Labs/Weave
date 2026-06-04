@@ -100,7 +100,7 @@ contract WeaveAutomation is AutomationCompatibleInterface {
 
     /// @notice Runs on-chain only when checkUpkeep returned true.
     /// Computes per-constituent minAmountsOut from oracle prices minus
-    /// maxRebalanceSlippageBps before calling rebalance() — prevents sandwich
+    /// maxRebalanceSlippageBps before calling rebalance(), prevents sandwich
     /// attacks on automation-triggered rebalances on mainnet.
     function performUpkeep(bytes calldata performData) external override {
         address[] memory baskets = abi.decode(performData, (address[]));
@@ -110,7 +110,7 @@ contract WeaveAutomation is AutomationCompatibleInterface {
         for (uint256 i = 0; i < len; ++i) {
             IBasket basket = IBasket(baskets[i]);
 
-            // On-chain double-check — conditions may have changed since checkUpkeep ran.
+            // On-chain double-check as conditions may have changed since checkUpkeep ran.
             if (!basket.rebalancingEnabled()) continue;
             if (basket.suspended())           continue;
             if (!basket.needsRebalancing())   continue;
@@ -120,9 +120,6 @@ contract WeaveAutomation is AutomationCompatibleInterface {
             uint256[] memory minAmountsOut = new uint256[](numConsts);
 
             // Compute minimum acceptable USDG out for each sell leg.
-            // For buy legs the basket uses its own slippage via _buyConstituents.
-            // Here we only need to protect sell legs in _rebalanceSell —
-            // pass minUsdgOut per constituent computed from oracle price minus slippage.
             uint256[] memory balances = basket.constituentBalances();
             uint256 totalValue        = basket.totalValueUsdg();
             uint256[] memory targets  = basket.targetWeightsBps();
@@ -134,7 +131,6 @@ contract WeaveAutomation is AutomationCompatibleInterface {
                 uint256 targetValue  = Math.mulDiv(totalValue, targets[j], 10_000);
 
                 if (currentValue > targetValue) {
-                    // This is an overweight constituent — it will be sold.
                     // Compute expected USDG from the sell and apply slippage tolerance.
                     uint256 usdgToRaise    = currentValue - targetValue;
                     uint256 minUsdgOut     = Math.mulDiv(
@@ -144,8 +140,6 @@ contract WeaveAutomation is AutomationCompatibleInterface {
                     );
                     minAmountsOut[j] = minUsdgOut;
                 }
-                // Underweight constituents (buy legs) get 0 — protected by
-                // BasketImplementation._buyConstituents using registry.maxSwapSlippageBps.
             }
 
             basket.rebalance(minAmountsOut);

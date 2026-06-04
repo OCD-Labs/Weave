@@ -399,7 +399,6 @@ func (c *basketStateCache) constituentsJSON() any {
 // getBasketStateFromCache reads from basket_state_cache if the entry is
 // within 30 seconds. If stale or absent, reads live from the RPC node,
 // writes the result back to the cache, and returns it.
-// The cache is in SQLite — shared across all backend instances.
 func (h *handler) getBasketStateFromCache(basketAddr string) (*basketStateCache, error) {
 	var c basketStateCache
 	var needsRebal int
@@ -491,7 +490,7 @@ func (h *handler) fetchBasketStateRPC(basketAddr string) (*basketStateCache, err
 		constituentAddrs[i] = strings.ToLower(c.Hex())
 	}
 
-	// Fetch symbol and sector for all constituents in one query — no per-constituent queries.
+	// Fetch symbol and sector for all constituents in one query.
 	type assetMeta struct {
 		symbol string
 		sector string
@@ -906,7 +905,7 @@ func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 	wallet := strings.ToLower(r.PathValue("wallet"))
 
-	// All deposit aggregates for this wallet grouped by basket — one query.
+	// All deposit aggregates for this wallet grouped by basket.
 	type basketAgg struct {
 		name               string
 		symbol             string
@@ -966,7 +965,7 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 	}
 	depRows.Close()
 
-	// All redemption aggregates for this wallet grouped by basket — one query.
+	// All redemption aggregates for this wallet grouped by basket.
 	redRows, err := h.db.Query(`
 		SELECT basket_address,
 		       SUM(CAST(usdg_returned AS REAL))        AS total_red,
@@ -1138,7 +1137,6 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 		args...,
 	)
 
-	// Group snapshots by basket address in Go — zero extra queries.
 	snapshotsByBasket := make(map[string][]snapshotEntry)
 	if err == nil {
 		for snapRows.Next() {
@@ -1270,7 +1268,6 @@ func (h *handler) getClaimableSnapshots(
 	result := make([]snapshotEntry, 0, len(snapshots))
 
 	for _, snap := range snapshots {
-		// Check in-memory cache map — zero additional queries per snapshot.
 		if ce, ok := cache[snap.SnapshotID]; ok && now-ce.cachedAt <= 60 {
 			snap.ClaimableUsdg = ce.claimableUsdg
 			result = append(result, snap)

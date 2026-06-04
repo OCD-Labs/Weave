@@ -284,7 +284,7 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         emit Rebalanced(msg.sender);
     }
 
-    /// @notice Phase 1 of rebalance: sell all overweight positions to accumulate USDG.
+    /// @notice Sell all overweight positions to accumulate USDG.
     function _rebalanceSell(
         int256[] memory deltas,
         uint256[] calldata minAmountsOut,
@@ -318,7 +318,7 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         }
     }
 
-    /// @notice Phase 2 of rebalance: buy all underweight positions with accumulated USDG.
+    /// @notice Buy all underweight positions with accumulated USDG.
     function _rebalanceBuy(
         int256[] memory deltas,
         IWeaveRegistry reg

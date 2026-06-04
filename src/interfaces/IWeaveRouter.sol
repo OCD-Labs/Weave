@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 /// @notice DEX router abstraction — lets governance swap in a real DEX on mainnet
-/// without touching any basket contract. MockSwapRouter implements this on testnet.
+/// without touching any basket contract. SwapRouter implements this on testnet.
 interface IWeaveRouter {
     /// @notice Sell exact usdgIn, receive at least minTokenOut of token.
     function swapExactUSDGForToken(

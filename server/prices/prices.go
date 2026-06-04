@@ -129,8 +129,7 @@ func (p *Poller) poll(ctx context.Context) {
 }
 
 // readOraclePrice calls latestRoundData() on the oracle contract and returns
-// the answer field (index 1 in the 5-tuple return). Returns nil on any error
-// or non-positive price so callers can skip without crashing the poll loop.
+// the answer field (index 1 in the 5-tuple return). 
 func (p *Poller) readOraclePrice(ctx context.Context, client *ethclient.Client, oracle common.Address) *big.Int {
 	caller := bind.NewBoundContract(oracle, latestRoundDataABI, client, nil, nil)
 

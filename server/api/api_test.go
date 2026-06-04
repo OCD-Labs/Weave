@@ -1015,7 +1015,7 @@ func TestPctChange_Helper(t *testing.T) {
 
 		router := api.NewRouter(database, "", "gpt-4.1-mini")
 		req := httptest.NewRequest(http.MethodGet, "/catalogue/"+addr, nil)
-		// Note: single asset endpoint doesn't return priceChange24hPct — use /prices instead.
+		// Note: single asset endpoint doesn't return priceChange24hPct.
 		req2 := httptest.NewRequest(http.MethodGet, "/prices", nil)
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req2)
@@ -1023,7 +1023,7 @@ func TestPctChange_Helper(t *testing.T) {
 		var result []map[string]any
 		json.NewDecoder(rec.Body).Decode(&result)
 
-		_ = req // suppress unused warning
-		_ = tc.expected // covered by catalogue test above
+		_ = req 
+		_ = tc.expected 
 	}
 }
