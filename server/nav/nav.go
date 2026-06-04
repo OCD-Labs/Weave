@@ -33,8 +33,7 @@ var basketViewABI, _ = abi.JSON(strings.NewReader(`[
 ]`))
 
 // Poller reads navPerToken and totalValueUsdg from every active basket on
-// each interval tick and writes the result to nav_history. This is what
-// populates the performance charts the frontend reads.
+// each interval tick and writes the result to nav_history.
 type Poller struct {
 	rpcURL   string
 	db       *db.DB
@@ -67,9 +66,7 @@ func (p *Poller) Run(ctx context.Context) {
 }
 
 func (p *Poller) poll(ctx context.Context) {
-	// Load all non-suspended basket addresses in one query.
-	// Nav polling must cover every basket on every cycle — there is no
-	// "already done" condition here unlike seeding, so no pagination needed.
+	// Nav polling must cover every basket on every cycle.
 	rows, err := p.db.Query(`SELECT address FROM baskets WHERE suspended = 0`)
 	if err != nil {
 		log.Printf("nav: db query error: %v", err)

@@ -96,7 +96,7 @@ contract CreatorToken is ICreatorToken, ERC20, ReentrancyGuard {
 
         _snapshots[snapId] = Snapshot({
             usdgAmount:  usdgAmount,
-            totalSupply: TOTAL_SUPPLY,   // fixed — always the same, but stored for clarity
+            totalSupply: TOTAL_SUPPLY,
             blockNumber: block.number
         });
 
@@ -151,7 +151,7 @@ contract CreatorToken is ICreatorToken, ERC20, ReentrancyGuard {
             uint256 amount = claimableRevenue(msg.sender, i);
             if (amount == 0) continue;
 
-            // Mark before accumulating — no external calls inside this loop.
+            // Mark before accumulating.
             _claimed[msg.sender][i] = true;
             accumulated += amount;
 
@@ -160,7 +160,7 @@ contract CreatorToken is ICreatorToken, ERC20, ReentrancyGuard {
 
         if (accumulated == 0) revert NothingToClaim();
 
-        // Single transfer for all accumulated claims — saves gas vs per-snapshot transfers.
+        // Single transfer for all accumulated claims.
         IERC20(usdg).safeTransfer(msg.sender, accumulated);
     }
 

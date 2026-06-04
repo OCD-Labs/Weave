@@ -142,7 +142,6 @@ func TestPoll_MultipleSuspendedAllExcluded(t *testing.T) {
 
 func TestPollOne_WritesNavHistory_WhenRPCSucceeds(t *testing.T) {
 	// This test verifies the DB write path independently of the RPC.
-	// We call the DB Exec directly to confirm schema correctness.
 	database := openTestDB(t)
 	insertBasket(t, database, "0xbasket1", 0)
 
