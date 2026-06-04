@@ -65,7 +65,7 @@ const openAPISpec = `{
       "get": {
         "tags": ["Catalogue"],
         "summary": "Get a single asset",
-        "description": "Returns asset metadata only. currentPriceUsdg and priceChange24hPct are NOT returned — use GET /catalogue for price data.",
+        "description": "Returns asset metadata including current oracle price and 24h price change.",
         "operationId": "getCatalogueAsset",
         "parameters": [
           {
@@ -117,7 +117,7 @@ const openAPISpec = `{
       "get": {
         "tags": ["Baskets"],
         "summary": "Get basket detail",
-        "description": "Returns full basket detail. Constituent weights and balances come from a live contract basketState() call cached for 30 seconds. Note: constituents do not include per-constituent price data — cross-reference with GET /catalogue by address.",
+        "description": "Returns full basket detail. Constituent weights and balances come from a live contract basketState() call cached for 30 seconds.",
         "operationId": "getBasket",
         "parameters": [
           {
@@ -282,14 +282,16 @@ const openAPISpec = `{
       },
       "CatalogueAssetDetail": {
         "type": "object",
-        "description": "Single asset metadata from GET /catalogue/:address. Does not include price data.",
+        "description": "Single asset from GET /catalogue/:address.",
         "properties": {
-          "address":  { "type": "string" },
-          "symbol":   { "type": "string" },
-          "name":     { "type": "string" },
-          "sector":   { "type": "string" },
-          "oracle":   { "type": "string" },
-          "isActive": { "type": "boolean" }
+          "address":           { "type": "string" },
+          "symbol":            { "type": "string" },
+          "name":              { "type": "string" },
+          "sector":            { "type": "string" },
+          "oracle":            { "type": "string" },
+          "isActive":          { "type": "boolean" },
+          "currentPriceUsdg":  { "type": "string", "description": "8-decimal oracle price. '0' before first price poll." },
+          "priceChange24hPct": { "type": "string", "description": "'0.00' when insufficient history." }
         }
       },
       "PriceEntry": {
@@ -306,6 +308,7 @@ const openAPISpec = `{
         "type": "object",
         "description": "Constituent as returned in GET /baskets list",
         "properties": {
+          "address":         { "type": "string", "description": "Token contract address, lowercase" },
           "symbol":          { "type": "string" },
           "targetWeightBps": { "type": "integer", "description": "Target weight in basis points, e.g. 5000 = 50%" },
           "sector":          { "type": "string" }
@@ -315,12 +318,16 @@ const openAPISpec = `{
         "type": "object",
         "description": "Constituent as returned in GET /baskets/:address. Weight fields are strings not integers.",
         "properties": {
-          "address":          { "type": "string" },
-          "symbol":           { "type": "string" },
-          "sector":           { "type": "string" },
-          "targetWeightBps":  { "type": "string", "description": "Target weight in bps as string, e.g. '5000'" },
-          "currentWeightBps": { "type": "string", "description": "Live weight in bps as string computed from oracle prices, e.g. '4998'" },
-          "balanceRaw":       { "type": "string", "description": "18-decimal constituent token balance as uint256 string" }
+          "address":           { "type": "string" },
+          "symbol":            { "type": "string" },
+          "name":              { "type": "string", "description": "Full company name e.g. 'Tesla Inc'" },
+          "sector":            { "type": "string" },
+          "targetWeightBps":   { "type": "string", "description": "Target weight in bps as string, e.g. '5000'" },
+          "currentWeightBps":  { "type": "string", "description": "Live weight in bps as string computed from oracle prices" },
+          "balanceRaw":        { "type": "string", "description": "18-decimal constituent token balance as uint256 string" },
+          "priceUsdg":         { "type": "string", "description": "8-decimal oracle price. '0' before first price poll." },
+          "valueUsdg":         { "type": "string", "description": "6-decimal USDG value = balanceRaw * priceUsdg / 1e20. '0' before first price poll." },
+          "priceChange24hPct": { "type": "string", "description": "'0.00' when insufficient history." }
         }
       },
       "BasketSummary": {
@@ -400,11 +407,15 @@ const openAPISpec = `{
         "properties": {
           "basketAddress":      { "type": "string" },
           "walletAddress":      { "type": "string" },
+          "basketName":         { "type": "string" },
+          "basketSymbol":       { "type": "string" },
+          "basketNavPerToken":  { "type": "string", "description": "18-decimal NAV per basket token at time of query" },
           "basketTokenBalance": { "type": "string", "description": "18-decimal basket token balance computed from deposit/redemption event history" },
           "currentValueUsdg":   { "type": "string", "description": "6-decimal current value = basketTokenBalance * navPerToken / 1e18" },
           "totalDepositedUsdg": { "type": "string", "description": "6-decimal sum of all USDG deposited by this wallet (before fees)" },
-          "unrealisedPnlUsdg":  { "type": "string", "description": "6-decimal unrealised PnL = currentValueUsdg - totalDepositedUsdg. May be negative." },
-          "unrealisedPnlPct":   { "type": "string", "description": "Formatted percentage string e.g. '-0.80'" }
+          "unrealisedPnlUsdg":  { "type": "string", "description": "6-decimal unrealised PnL. May be negative." },
+          "unrealisedPnlPct":   { "type": "string", "description": "Formatted percentage string e.g. '-0.80'" },
+          "constituents":      { "type": "array", "items": { "$ref": "#/components/schemas/BasketConstituentSummary" } }
         }
       },
       "PortfolioPosition": {
@@ -420,7 +431,11 @@ const openAPISpec = `{
           "currentValueUsdg":   { "type": "string" },
           "totalDepositedUsdg": { "type": "string" },
           "unrealisedPnlUsdg":  { "type": "string" },
-          "unrealisedPnlPct":   { "type": "string" }
+          "unrealisedPnlPct":   { "type": "string" },
+          "constituents": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/BasketConstituentSummary" }
+          }
         }
       },
       "PortfolioSummary": {
@@ -449,7 +464,8 @@ const openAPISpec = `{
           "snapshotId":        { "type": "integer" },
           "usdgAmount":        { "type": "string", "description": "Total USDG in this snapshot" },
           "timestamp":         { "type": "integer" },
-          "claimableByWallet": { "type": "string", "description": "6-decimal USDG claimable by the queried wallet, proportional to their creator token balance at the snapshot block" }
+          "txHash":            { "type": "string" },
+          "claimableByWallet": { "type": "string", "description": "6-decimal USDG claimable by the queried wallet" }
         }
       },
       "CreatorBasket": {

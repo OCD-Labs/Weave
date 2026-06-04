@@ -163,17 +163,18 @@ func (h *handler) listBaskets(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch all constituents for all baskets in one query, group in Go.
 	cRows, err := h.db.Query(`
-		SELECT bc.basket_address, bc.symbol, bc.target_weight_bps, COALESCE(sa.sector,'')
+		SELECT bc.basket_address, bc.stock_address, bc.symbol, bc.target_weight_bps, COALESCE(sa.sector,'')
 		FROM basket_constituents bc
 		LEFT JOIN supported_assets sa ON sa.address = bc.stock_address
 		ORDER BY bc.basket_address, bc.display_order`)
 	if err == nil {
 		for cRows.Next() {
-			var basketAddr, sym, sector string
+			var basketAddr, stockAddr, sym, sector string
 			var weight int64
-			if cRows.Scan(&basketAddr, &sym, &weight, &sector) == nil {
+			if cRows.Scan(&basketAddr, &stockAddr, &sym, &weight, &sector) == nil {
 				if b, ok := byAddr[basketAddr]; ok {
 					b.Constituents = append(b.Constituents, constituentSummary{
+						Address:         stockAddr,
 						Symbol:          sym,
 						TargetWeightBps: weight,
 						Sector:          sector,
@@ -194,6 +195,7 @@ func (h *handler) listBaskets(w http.ResponseWriter, r *http.Request) {
 }
 
 type constituentSummary struct {
+	Address         string `json:"address"`
 	Symbol          string `json:"symbol"`
 	TargetWeightBps int64  `json:"targetWeightBps"`
 	Sector          string `json:"sector"`
@@ -484,102 +486,192 @@ func (h *handler) fetchBasketStateRPC(basketAddr string) (*basketStateCache, err
 	needsRebal, _ := unpacked[6].(bool)
 	maxDrift, _ := unpacked[8].(*big.Int)
 
-	// Collect all constituent addresses for a single supported_assets lookup.
 	constituentAddrs := make([]string, len(constituents))
 	for i, c := range constituents {
 		constituentAddrs[i] = strings.ToLower(c.Hex())
 	}
 
-	// Fetch symbol and sector for all constituents in one query.
 	type assetMeta struct {
 		symbol string
+		name   string
 		sector string
 	}
 	metaByAddr := make(map[string]assetMeta, len(constituentAddrs))
 
 	if len(constituentAddrs) > 0 {
 		placeholders := make([]string, len(constituentAddrs))
-		args := make([]interface{}, len(constituentAddrs))
+		args := make([]any, len(constituentAddrs))
 		for i, a := range constituentAddrs {
 			placeholders[i] = "?"
 			args[i] = a
 		}
+		inClause := strings.Join(placeholders, ",")
+
 		metaRows, err := h.db.Query(
-			`SELECT address, symbol, sector FROM supported_assets WHERE address IN (`+
-				strings.Join(placeholders, ",")+`)`,
+			`SELECT address, symbol, name, sector FROM supported_assets WHERE address IN (`+inClause+`)`,
 			args...,
 		)
 		if err == nil {
 			for metaRows.Next() {
-				var addr, sym, sec string
-				if metaRows.Scan(&addr, &sym, &sec) == nil {
-					metaByAddr[addr] = assetMeta{symbol: sym, sector: sec}
+				var a, sym, nm, sec string
+				if metaRows.Scan(&a, &sym, &nm, &sec) == nil {
+					metaByAddr[a] = assetMeta{symbol: sym, name: nm, sector: sec}
 				}
 			}
 			metaRows.Close()
 		}
-	}
 
-	type constituentDetail struct {
-		Address          string `json:"address"`
-		Symbol           string `json:"symbol"`
-		Sector           string `json:"sector"`
-		TargetWeightBps  string `json:"targetWeightBps"`
-		CurrentWeightBps string `json:"currentWeightBps"`
-		BalanceRaw       string `json:"balanceRaw"`
-	}
-
-	details := make([]constituentDetail, 0, len(constituents))
-	for i, c := range constituents {
-		cAddr := strings.ToLower(c.Hex())
-		meta := metaByAddr[cAddr]
-
-		tw, cw, bal := "0", "0", "0"
-		if i < len(targetWeights) && targetWeights[i] != nil {
-			tw = targetWeights[i].String()
+		type priceInfo struct {
+			currentPrice string
+			change24h    string
 		}
-		if i < len(currentWeights) && currentWeights[i] != nil {
-			cw = currentWeights[i].String()
+		priceByAddr := make(map[string]priceInfo, len(constituentAddrs))
+
+		priceRows, err := h.db.Query(`
+			SELECT
+				p.stock_address,
+				p.price_usdg AS current_price,
+				COALESCE(
+					ROUND(
+						(CAST(p.price_usdg AS REAL) - CAST(prev.price_usdg AS REAL))
+						/ CAST(prev.price_usdg AS REAL) * 100,
+						2
+					),
+					0.0
+				) AS change_24h
+			FROM price_history p
+			LEFT JOIN price_history prev
+				ON prev.stock_address = p.stock_address
+				AND prev.timestamp = (
+					SELECT MAX(timestamp)
+					FROM price_history
+					WHERE stock_address = p.stock_address
+					AND timestamp <= strftime('%s','now') - 86400
+				)
+			WHERE p.stock_address IN (`+inClause+`)
+			AND p.timestamp = (
+				SELECT MAX(timestamp)
+				FROM price_history
+				WHERE stock_address = p.stock_address
+			)`, args...,
+		)
+		if err == nil {
+			for priceRows.Next() {
+				var a, cur string
+				var chg float64
+				if priceRows.Scan(&a, &cur, &chg) == nil {
+					priceByAddr[a] = priceInfo{
+						currentPrice: cur,
+						change24h:    fmt.Sprintf("%.2f", chg),
+					}
+				}
+			}
+			priceRows.Close()
 		}
-		if i < len(balances) && balances[i] != nil {
-			bal = balances[i].String()
+
+		type constituentDetail struct {
+			Address           string `json:"address"`
+			Symbol            string `json:"symbol"`
+			Name              string `json:"name"`
+			Sector            string `json:"sector"`
+			TargetWeightBps   string `json:"targetWeightBps"`
+			CurrentWeightBps  string `json:"currentWeightBps"`
+			BalanceRaw        string `json:"balanceRaw"`
+			PriceUsdg         string `json:"priceUsdg"`
+			ValueUsdg         string `json:"valueUsdg"`
+			PriceChange24hPct string `json:"priceChange24hPct"`
 		}
 
-		details = append(details, constituentDetail{
-			Address:          cAddr,
-			Symbol:           meta.symbol,
-			Sector:           meta.sector,
-			TargetWeightBps:  tw,
-			CurrentWeightBps: cw,
-			BalanceRaw:       bal,
-		})
-	}
+		details := make([]constituentDetail, 0, len(constituents))
+		for i, c := range constituents {
+			cAddr := strings.ToLower(c.Hex())
+			meta := metaByAddr[cAddr]
+			price := priceByAddr[cAddr]
 
-	consJSON, _ := json.Marshal(details)
-	cwJSON, _ := json.Marshal(bigIntSliceToStrings(currentWeights))
-	balJSON, _ := json.Marshal(bigIntSliceToStrings(balances))
+			tw, cw, bal := "0", "0", "0"
+			if i < len(targetWeights) && targetWeights[i] != nil {
+				tw = targetWeights[i].String()
+			}
+			if i < len(currentWeights) && currentWeights[i] != nil {
+				cw = currentWeights[i].String()
+			}
+			if i < len(balances) && balances[i] != nil {
+				bal = balances[i].String()
+			}
 
-	navStr, tvStr, maxDriftVal := "0", "0", int64(0)
-	if nav != nil {
-		navStr = nav.String()
-	}
-	if totalValue != nil {
-		tvStr = totalValue.String()
-	}
-	if maxDrift != nil {
-		maxDriftVal = maxDrift.Int64()
+			// valueUsdg = balanceRaw (18-dec) * priceUsdg (8-dec) / 1e20
+			// result is 6-dec USDG matching totalValueUsdg units
+			valueUsdg := "0"
+			if price.currentPrice != "" && bal != "0" {
+				balBig := new(big.Int)
+				priceBig := new(big.Int)
+				if _, ok := balBig.SetString(bal, 10); ok {
+					if _, ok := priceBig.SetString(price.currentPrice, 10); ok {
+						// balBig * priceBig / 1e20
+						val := new(big.Int).Mul(balBig, priceBig)
+						val.Div(val, new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil))
+						valueUsdg = val.String()
+					}
+				}
+			}
+
+			currentPriceStr := price.currentPrice
+			if currentPriceStr == "" {
+				currentPriceStr = "0"
+			}
+			changeStr := price.change24h
+			if changeStr == "" {
+				changeStr = "0.00"
+			}
+
+			details = append(details, constituentDetail{
+				Address:           cAddr,
+				Symbol:            meta.symbol,
+				Name:              meta.name,
+				Sector:            meta.sector,
+				TargetWeightBps:   tw,
+				CurrentWeightBps:  cw,
+				BalanceRaw:        bal,
+				PriceUsdg:         currentPriceStr,
+				ValueUsdg:         valueUsdg,
+				PriceChange24hPct: changeStr,
+			})
+		}
+
+		consJSON, _ := json.Marshal(details)
+		cwJSON, _ := json.Marshal(bigIntSliceToStrings(currentWeights))
+		balJSON, _ := json.Marshal(bigIntSliceToStrings(balances))
+
+		navStr, tvStr, maxDriftVal := "0", "0", int64(0)
+		if nav != nil {
+			navStr = nav.String()
+		}
+		if totalValue != nil {
+			tvStr = totalValue.String()
+		}
+		if maxDrift != nil {
+			maxDriftVal = maxDrift.Int64()
+		}
+
+		return &basketStateCache{
+			BasketAddress:      basketAddr,
+			ConstituentsJSON:   string(consJSON),
+			CurrentWeightsJSON: string(cwJSON),
+			BalancesJSON:       string(balJSON),
+			TotalValueUsdg:     tvStr,
+			NavPerToken:        navStr,
+			MaxDriftBps:        maxDriftVal,
+			NeedsRebalancing:   needsRebal,
+			CachedAt:           time.Now().Unix(),
+		}, nil
 	}
 
 	return &basketStateCache{
-		BasketAddress:      basketAddr,
-		ConstituentsJSON:   string(consJSON),
-		CurrentWeightsJSON: string(cwJSON),
-		BalancesJSON:       string(balJSON),
-		TotalValueUsdg:     tvStr,
-		NavPerToken:        navStr,
-		MaxDriftBps:        maxDriftVal,
-		NeedsRebalancing:   needsRebal,
-		CachedAt:           time.Now().Unix(),
+		BasketAddress:    basketAddr,
+		ConstituentsJSON: "[]",
+		TotalValueUsdg:   "0",
+		NavPerToken:      "0",
+		CachedAt:         time.Now().Unix(),
 	}, nil
 }
 
@@ -700,17 +792,17 @@ func (h *handler) getCatalogue(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) getCatalogueAsset(w http.ResponseWriter, r *http.Request) {
 	addr := strings.ToLower(r.PathValue("address"))
-
 	var a struct {
-		Address string `json:"address"`
-		Symbol  string `json:"symbol"`
-		Name    string `json:"name"`
-		Sector  string `json:"sector"`
-		Oracle  string `json:"oracle"`
-		Active  bool   `json:"isActive"`
+		Address           string `json:"address"`
+		Symbol            string `json:"symbol"`
+		Name              string `json:"name"`
+		Sector            string `json:"sector"`
+		Oracle            string `json:"oracle"`
+		Active            bool   `json:"isActive"`
+		CurrentPriceUsdg  string `json:"currentPriceUsdg"`
+		PriceChange24hPct string `json:"priceChange24hPct"`
 	}
 	var active int
-
 	err := h.db.QueryRow(`
 		SELECT address, symbol, name, sector, oracle_address, is_active
 		FROM supported_assets WHERE address = ?`, addr).Scan(
@@ -724,8 +816,27 @@ func (h *handler) getCatalogueAsset(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-
 	a.Active = active == 1
+
+	// Fetch latest price and 24h change from price_history.
+	var currentPrice, prev24h string
+	h.db.QueryRow(`
+		SELECT price_usdg FROM price_history
+		WHERE stock_address = ? ORDER BY timestamp DESC LIMIT 1`, addr,
+	).Scan(&currentPrice)
+	h.db.QueryRow(`
+		SELECT price_usdg FROM price_history
+		WHERE stock_address = ?
+		AND timestamp <= strftime('%s','now') - 86400
+		ORDER BY timestamp DESC LIMIT 1`, addr,
+	).Scan(&prev24h)
+
+	a.CurrentPriceUsdg = currentPrice
+	if a.CurrentPriceUsdg == "" {
+		a.CurrentPriceUsdg = "0"
+	}
+	a.PriceChange24hPct = pctChange(prev24h, currentPrice)
+
 	jsonOK(w, a)
 }
 
@@ -819,14 +930,40 @@ func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 	basketAddr := strings.ToLower(r.PathValue("address"))
 	wallet := strings.ToLower(r.PathValue("wallet"))
 
-	var totalDeposited, totalRedeemed string
+	var basketName, basketSymbol, navStr string
+	h.db.QueryRow(`
+		SELECT b.name, b.symbol, COALESCE(n.nav_per_token, '0')
+		FROM baskets b
+		LEFT JOIN (
+			SELECT basket_address, nav_per_token FROM nav_history
+			WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 1
+		) n ON n.basket_address = b.address
+		WHERE b.address = ?`, basketAddr, basketAddr,
+	).Scan(&basketName, &basketSymbol, &navStr)
 
+	constituents := []constituentSummary{}
+	cRows, err := h.db.Query(`
+		SELECT bc.stock_address, bc.symbol, bc.target_weight_bps, COALESCE(sa.sector,'')
+		FROM basket_constituents bc
+		LEFT JOIN supported_assets sa ON sa.address = bc.stock_address
+		WHERE bc.basket_address = ?
+		ORDER BY bc.display_order`, basketAddr)
+	if err == nil {
+		for cRows.Next() {
+			var c constituentSummary
+			if cRows.Scan(&c.Address, &c.Symbol, &c.TargetWeightBps, &c.Sector) == nil {
+				constituents = append(constituents, c)
+			}
+		}
+		cRows.Close()
+	}
+
+	var totalDeposited, totalRedeemed string
 	h.db.QueryRow(`
 		SELECT COALESCE(SUM(CAST(usdg_amount AS REAL)), 0)
 		FROM deposits WHERE basket_address = ? AND investor_address = ?`,
 		basketAddr, wallet,
 	).Scan(&totalDeposited)
-
 	h.db.QueryRow(`
 		SELECT COALESCE(SUM(CAST(usdg_returned AS REAL)), 0)
 		FROM redemptions WHERE basket_address = ? AND investor_address = ?`,
@@ -835,14 +972,9 @@ func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 
 	dep, _ := new(big.Float).SetString(totalDeposited)
 	red, _ := new(big.Float).SetString(totalRedeemed)
-	if dep == nil {
-		dep = new(big.Float)
-	}
-	if red == nil {
-		red = new(big.Float)
-	}
+	if dep == nil { dep = new(big.Float) }
+	if red == nil { red = new(big.Float) }
 
-	// Compute token balance: tokens minted minus tokens burned.
 	var tokensMinted, tokensBurned string
 	h.db.QueryRow(`
 		SELECT COALESCE(SUM(CAST(basket_tokens_minted AS REAL)), 0)
@@ -857,33 +989,18 @@ func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 
 	minted, _ := new(big.Float).SetString(tokensMinted)
 	burned, _ := new(big.Float).SetString(tokensBurned)
-	if minted == nil {
-		minted = new(big.Float)
-	}
-	if burned == nil {
-		burned = new(big.Float)
-	}
+	if minted == nil { minted = new(big.Float) }
+	if burned == nil { burned = new(big.Float) }
+
 	balance := new(big.Float).Sub(minted, burned)
-
-	// Current value = balance * navPerToken from nav_history.
-	var navStr string
-	h.db.QueryRow(`
-		SELECT nav_per_token FROM nav_history
-		WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 1`, basketAddr,
-	).Scan(&navStr)
-
 	nav, _ := new(big.Float).SetString(navStr)
-	if nav == nil {
-		nav = new(big.Float)
-	}
+	if nav == nil { nav = new(big.Float) }
 
 	currentValue := new(big.Float).Mul(balance, nav)
-	// nav_per_token is 18-decimal; divide by 1e18 to get USDG 6-decimal value.
 	currentValue.Quo(currentValue, new(big.Float).SetFloat64(1e18))
 
 	costBasis := new(big.Float).Sub(dep, red)
 	pnl := new(big.Float).Sub(currentValue, costBasis)
-
 	pnlPct := "0.00"
 	if costBasis.Sign() > 0 {
 		p := new(big.Float).Quo(pnl, costBasis)
@@ -891,21 +1008,24 @@ func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 		pnlPct = p.Text('f', 2)
 	}
 
-	jsonOK(w, map[string]string{
+	jsonOK(w, map[string]any{
 		"basketAddress":      basketAddr,
 		"walletAddress":      wallet,
+		"basketName":         basketName,
+		"basketSymbol":       basketSymbol,
+		"basketNavPerToken":  navStr,
 		"basketTokenBalance": balance.Text('f', 0),
 		"currentValueUsdg":   currentValue.Text('f', 0),
 		"totalDepositedUsdg": dep.Text('f', 0),
 		"unrealisedPnlUsdg":  pnl.Text('f', 0),
 		"unrealisedPnlPct":   pnlPct,
+		"constituents":       constituents,
 	})
 }
 
 func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 	wallet := strings.ToLower(r.PathValue("wallet"))
 
-	// All deposit aggregates for this wallet grouped by basket.
 	type basketAgg struct {
 		name               string
 		symbol             string
@@ -925,8 +1045,8 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 		SELECT d.basket_address,
 		       b.name, b.symbol, b.rebalancing_enabled, b.suspended,
 		       COALESCE(n.nav_per_token,'0'),
-		       SUM(CAST(d.usdg_amount AS REAL))          AS total_dep,
-		       SUM(CAST(d.basket_tokens_minted AS REAL))  AS total_minted
+		       SUM(CAST(d.usdg_amount AS REAL)),
+		       SUM(CAST(d.basket_tokens_minted AS REAL))
 		FROM deposits d
 		JOIN baskets b ON b.address = d.basket_address
 		LEFT JOIN (
@@ -965,11 +1085,10 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 	}
 	depRows.Close()
 
-	// All redemption aggregates for this wallet grouped by basket.
 	redRows, err := h.db.Query(`
 		SELECT basket_address,
-		       SUM(CAST(usdg_returned AS REAL))        AS total_red,
-		       SUM(CAST(basket_tokens_burned AS REAL))  AS total_burned
+		       SUM(CAST(usdg_returned AS REAL)),
+		       SUM(CAST(basket_tokens_burned AS REAL))
 		FROM redemptions
 		WHERE investor_address = ?
 		GROUP BY basket_address`, wallet)
@@ -990,18 +1109,46 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 	}
 	redRows.Close()
 
+	constituentsByBasket := make(map[string][]constituentSummary)
+	if len(order) > 0 {
+		placeholders := make([]string, len(order))
+		args := make([]any, len(order))
+		for i, addr := range order {
+			placeholders[i] = "?"
+			args[i] = addr
+		}
+		cRows, err := h.db.Query(`
+			SELECT bc.basket_address, bc.stock_address, bc.symbol,
+			       bc.target_weight_bps, COALESCE(sa.sector,'')
+			FROM basket_constituents bc
+			LEFT JOIN supported_assets sa ON sa.address = bc.stock_address
+			WHERE bc.basket_address IN (`+strings.Join(placeholders, ",")+`)
+			ORDER BY bc.basket_address, bc.display_order`, args...)
+		if err == nil {
+			for cRows.Next() {
+				var basketAddr string
+				var c constituentSummary
+				if cRows.Scan(&basketAddr, &c.Address, &c.Symbol, &c.TargetWeightBps, &c.Sector) == nil {
+					constituentsByBasket[basketAddr] = append(constituentsByBasket[basketAddr], c)
+				}
+			}
+			cRows.Close()
+		}
+	}
+
 	type Position struct {
-		BasketAddress      string `json:"basketAddress"`
-		BasketName         string `json:"basketName"`
-		BasketSymbol       string `json:"basketSymbol"`
-		BasketNavPerToken  string `json:"basketNavPerToken"`
-		RebalancingEnabled bool   `json:"rebalancingEnabled"`
-		Suspended          bool   `json:"suspended"`
-		BasketTokenBalance string `json:"basketTokenBalance"`
-		CurrentValueUsdg   string `json:"currentValueUsdg"`
-		TotalDepositedUsdg string `json:"totalDepositedUsdg"`
-		UnrealisedPnlUsdg  string `json:"unrealisedPnlUsdg"`
-		UnrealisedPnlPct   string `json:"unrealisedPnlPct"`
+		BasketAddress      string             `json:"basketAddress"`
+		BasketName         string             `json:"basketName"`
+		BasketSymbol       string             `json:"basketSymbol"`
+		BasketNavPerToken  string             `json:"basketNavPerToken"`
+		RebalancingEnabled bool               `json:"rebalancingEnabled"`
+		Suspended          bool               `json:"suspended"`
+		BasketTokenBalance string             `json:"basketTokenBalance"`
+		CurrentValueUsdg   string             `json:"currentValueUsdg"`
+		TotalDepositedUsdg string             `json:"totalDepositedUsdg"`
+		UnrealisedPnlUsdg  string             `json:"unrealisedPnlUsdg"`
+		UnrealisedPnlPct   string             `json:"unrealisedPnlPct"`
+		Constituents       []constituentSummary `json:"constituents"`
 	}
 
 	positions := make([]Position, 0, len(order))
@@ -1033,6 +1180,11 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 		totalValue.Add(totalValue, currentVal)
 		totalDeposit.Add(totalDeposit, a.totalDeposited)
 
+		consts := constituentsByBasket[addr]
+		if consts == nil {
+			consts = []constituentSummary{}
+		}
+
 		positions = append(positions, Position{
 			BasketAddress:      addr,
 			BasketName:         a.name,
@@ -1045,6 +1197,7 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 			TotalDepositedUsdg: a.totalDeposited.Text('f', 0),
 			UnrealisedPnlUsdg:  pnl.Text('f', 0),
 			UnrealisedPnlPct:   pnlPct,
+			Constituents:       consts,
 		})
 	}
 
