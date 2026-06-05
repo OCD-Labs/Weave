@@ -97,24 +97,24 @@ var basketMetaABI, _ = abi.JSON(strings.NewReader(`[
 ]`))
 
 func init() {
-	addrType,     _ := abi.NewType("address",   "", nil)
-	stringType,   _ := abi.NewType("string",    "", nil)
-	boolType,     _ := abi.NewType("bool",      "", nil)
-	addrSlice,    _ := abi.NewType("address[]", "", nil)
+	addrType, _ := abi.NewType("address", "", nil)
+	stringType, _ := abi.NewType("string", "", nil)
+	boolType, _ := abi.NewType("bool", "", nil)
+	addrSlice, _ := abi.NewType("address[]", "", nil)
 	uint256Slice, _ := abi.NewType("uint256[]", "", nil)
 
 	basketCreatedABI = abi.Arguments{
-		{Name: "name",               Type: stringType},
-		{Name: "symbol",             Type: stringType},
-		{Name: "thesis",             Type: stringType},
-		{Name: "constituents",       Type: addrSlice},
-		{Name: "targetWeightsBps",   Type: uint256Slice},
+		{Name: "name", Type: stringType},
+		{Name: "symbol", Type: stringType},
+		{Name: "thesis", Type: stringType},
+		{Name: "constituents", Type: addrSlice},
+		{Name: "targetWeightsBps", Type: uint256Slice},
 		{Name: "rebalancingEnabled", Type: boolType},
 	}
 
 	assetAddedABI = abi.Arguments{
 		{Name: "symbol", Type: stringType},
-		{Name: "name",   Type: stringType},
+		{Name: "name", Type: stringType},
 		{Name: "sector", Type: stringType},
 		{Name: "oracle", Type: addrType},
 	}
@@ -130,6 +130,9 @@ type Indexer struct {
 
 	mu          sync.RWMutex
 	basketAddrs map[common.Address]bool
+
+	blockTsMu sync.Mutex
+	blockTs   map[uint64]uint64
 }
 
 func New(ctx context.Context, wsURL, rpcURL, registryAddr string, deployBlock int64, database *db.DB) (*Indexer, error) {
@@ -141,10 +144,12 @@ func New(ctx context.Context, wsURL, rpcURL, registryAddr string, deployBlock in
 		deployBlock:  deployBlock,
 		db:           database,
 		basketAddrs:  make(map[common.Address]bool),
+		blockTs:      make(map[uint64]uint64),
 	}, nil
 }
 
 func (idx *Indexer) Run() {
+	idx.migrateBlockNumberTimestamps()
 	idx.syncFromChain()
 	idx.scanTransactionalEvents()
 
@@ -207,10 +212,10 @@ func (idx *Indexer) syncAssets(client *ethclient.Client) {
 			elem = elem.Elem()
 		}
 
-		tokenField  := elem.FieldByName("TokenAddress")
+		tokenField := elem.FieldByName("TokenAddress")
 		oracleField := elem.FieldByName("Oracle")
 		symbolField := elem.FieldByName("Symbol")
-		nameField   := elem.FieldByName("Name")
+		nameField := elem.FieldByName("Name")
 		sectorField := elem.FieldByName("Sector")
 		activeField := elem.FieldByName("Active")
 
@@ -218,10 +223,10 @@ func (idx *Indexer) syncAssets(client *ethclient.Client) {
 			continue
 		}
 
-		token  := strings.ToLower(tokenField.Interface().(common.Address).Hex())
+		token := strings.ToLower(tokenField.Interface().(common.Address).Hex())
 		oracle := strings.ToLower(oracleField.Interface().(common.Address).Hex())
 		symbol := symbolField.String()
-		name   := nameField.String()
+		name := nameField.String()
 		sector := sectorField.String()
 		active := boolToInt(activeField.Bool())
 
@@ -276,19 +281,19 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 			elem = elem.Elem()
 		}
 
-		basketField       := elem.FieldByName("Basket")
+		basketField := elem.FieldByName("Basket")
 		creatorTokenField := elem.FieldByName("CreatorToken")
-		creatorField      := elem.FieldByName("Creator")
-		createdAtField    := elem.FieldByName("CreatedAt")
+		creatorField := elem.FieldByName("Creator")
+		createdAtField := elem.FieldByName("CreatedAt")
 
 		if !basketField.IsValid() || !creatorField.IsValid() {
 			continue
 		}
 
-		basket       := strings.ToLower(basketField.Interface().(common.Address).Hex())
+		basket := strings.ToLower(basketField.Interface().(common.Address).Hex())
 		creatorToken := strings.ToLower(creatorTokenField.Interface().(common.Address).Hex())
-		creator      := strings.ToLower(creatorField.Interface().(common.Address).Hex())
-		createdAt    := createdAtField.Interface().(*big.Int).Int64()
+		creator := strings.ToLower(creatorField.Interface().(common.Address).Hex())
+		createdAt := createdAtField.Interface().(*big.Int).Int64()
 
 		_, err := idx.db.Exec(`
 			INSERT INTO baskets
@@ -313,10 +318,10 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 }
 
 // seedMissingConstituents fills constituent rows and basket metadata for any
-// basket that has zero constituent rows. 
+// basket that has zero constituent rows.
 func (idx *Indexer) seedMissingConstituents() {
 	const pageSize = 50
-	const workers  = 5
+	const workers = 5
 
 	for {
 		rows, err := idx.db.Query(`
@@ -393,10 +398,10 @@ func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) {
 		return
 	}
 
-	constituents,     ok1 := unpacked[0].([]common.Address)
-	targetWeights,    ok2 := unpacked[1].([]*big.Int)
-	rebalancingEnabled,_  := unpacked[6].(bool)
-	driftThresholdBps,_   := unpacked[7].(*big.Int)
+	constituents, ok1 := unpacked[0].([]common.Address)
+	targetWeights, ok2 := unpacked[1].([]*big.Int)
+	rebalancingEnabled, _ := unpacked[6].(bool)
+	driftThresholdBps, _ := unpacked[7].(*big.Int)
 
 	if !ok1 || !ok2 || len(constituents) == 0 {
 		log.Printf("indexer: seedOneBasket(%s): unexpected constituent types", basketAddr)
@@ -420,7 +425,7 @@ func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) {
 		return s
 	}
 
-	name   := callMeta("name")
+	name := callMeta("name")
 	symbol := callMeta("symbol")
 	thesis := callMeta("thesis")
 
@@ -568,7 +573,7 @@ func (idx *Indexer) scanTransactionalEvents() {
 
 		chunkErr := false
 		for _, vLog := range logs {
-			if err := idx.handleLogErr(vLog); err != nil {
+			if err := idx.handleLogErr(client, vLog); err != nil {
 				log.Printf("indexer: chunk [%d-%d] log write error: %v — stopping scan", start, end, err)
 				chunkErr = true
 				break
@@ -589,7 +594,7 @@ func (idx *Indexer) scanTransactionalEvents() {
 
 // handleLogErr routes a log to the appropriate handler and returns any write error.
 // Used by scanTransactionalEvents where cursor safety requires knowing if writes succeeded.
-func (idx *Indexer) handleLogErr(vLog types.Log) error {
+func (idx *Indexer) handleLogErr(client *ethclient.Client, vLog types.Log) error {
 	if len(vLog.Topics) == 0 {
 		return nil
 	}
@@ -598,20 +603,20 @@ func (idx *Indexer) handleLogErr(vLog types.Log) error {
 		idx.handleBasketCreated(vLog)
 		return nil
 	case topicDeposited:
-		return idx.handleDeposited(vLog)
+		return idx.handleDeposited(client, vLog)
 	case topicRedeemed:
-		return idx.handleRedeemed(vLog)
+		return idx.handleRedeemed(client, vLog)
 	case topicRebalanced:
-		return idx.handleRebalanced(vLog)
+		return idx.handleRebalanced(client, vLog)
 	case topicFeeSnapshoted:
-		return idx.handleFeeSnapshot(vLog)
+		return idx.handleFeeSnapshot(client, vLog)
 	}
 	return nil
 }
 
 // handleLog is used by the live subscription where we process all event types.
 // Write errors are logged but do not stop the subscription loop.
-func (idx *Indexer) handleLog(vLog types.Log) {
+func (idx *Indexer) handleLog(client *ethclient.Client, vLog types.Log) {
 	if len(vLog.Topics) == 0 {
 		return
 	}
@@ -619,19 +624,19 @@ func (idx *Indexer) handleLog(vLog types.Log) {
 	case topicBasketCreated:
 		idx.handleBasketCreated(vLog)
 	case topicDeposited:
-		if err := idx.handleDeposited(vLog); err != nil {
+		if err := idx.handleDeposited(client, vLog); err != nil {
 			log.Printf("indexer: live handleDeposited: %v", err)
 		}
 	case topicRedeemed:
-		if err := idx.handleRedeemed(vLog); err != nil {
+		if err := idx.handleRedeemed(client, vLog); err != nil {
 			log.Printf("indexer: live handleRedeemed: %v", err)
 		}
 	case topicRebalanced:
-		if err := idx.handleRebalanced(vLog); err != nil {
+		if err := idx.handleRebalanced(client, vLog); err != nil {
 			log.Printf("indexer: live handleRebalanced: %v", err)
 		}
 	case topicFeeSnapshoted:
-		if err := idx.handleFeeSnapshot(vLog); err != nil {
+		if err := idx.handleFeeSnapshot(client, vLog); err != nil {
 			log.Printf("indexer: live handleFeeSnapshot: %v", err)
 		}
 	case topicAssetAdded:
@@ -648,9 +653,9 @@ func (idx *Indexer) handleBasketCreated(vLog types.Log) {
 		return
 	}
 
-	basket       := strings.ToLower(common.HexToAddress(vLog.Topics[1].Hex()).Hex())
+	basket := strings.ToLower(common.HexToAddress(vLog.Topics[1].Hex()).Hex())
 	creatorToken := strings.ToLower(common.HexToAddress(vLog.Topics[2].Hex()).Hex())
-	creator      := strings.ToLower(common.HexToAddress(vLog.Topics[3].Hex()).Hex())
+	creator := strings.ToLower(common.HexToAddress(vLog.Topics[3].Hex()).Hex())
 
 	decoded, err := basketCreatedABI.Unpack(vLog.Data)
 	if err != nil || len(decoded) < 6 {
@@ -658,11 +663,11 @@ func (idx *Indexer) handleBasketCreated(vLog types.Log) {
 		return
 	}
 
-	name,        _ := decoded[0].(string)
-	symbol,      _ := decoded[1].(string)
-	thesis,      _ := decoded[2].(string)
-	constituents,_ := decoded[3].([]common.Address)
-	targetWeights,_ := decoded[4].([]*big.Int)
+	name, _ := decoded[0].(string)
+	symbol, _ := decoded[1].(string)
+	thesis, _ := decoded[2].(string)
+	constituents, _ := decoded[3].([]common.Address)
+	targetWeights, _ := decoded[4].([]*big.Int)
 	rebalancing, _ := decoded[5].(bool)
 
 	// Look up all constituent symbols before opening the write transaction.
@@ -751,7 +756,7 @@ func (idx *Indexer) handleAssetAdded(vLog types.Log) {
 	}
 
 	symbol, _ := decoded[0].(string)
-	name,   _ := decoded[1].(string)
+	name, _ := decoded[1].(string)
 	sector, _ := decoded[2].(string)
 	oracle, _ := decoded[3].(common.Address)
 
@@ -774,17 +779,16 @@ func (idx *Indexer) handleAssetAdded(vLog types.Log) {
 	}
 }
 
-func (idx *Indexer) handleDeposited(vLog types.Log) error {
+func (idx *Indexer) handleDeposited(client *ethclient.Client, vLog types.Log) error {
 	if len(vLog.Topics) < 2 || len(vLog.Data) < 96 {
 		return nil
 	}
-
 	investor := common.HexToAddress(vLog.Topics[1].Hex())
-	basket   := strings.ToLower(vLog.Address.Hex())
-
-	usdgAmount   := new(big.Int).SetBytes(vLog.Data[0:32])
+	basket := strings.ToLower(vLog.Address.Hex())
+	usdgAmount := new(big.Int).SetBytes(vLog.Data[0:32])
 	tokensMinted := new(big.Int).SetBytes(vLog.Data[32:64])
-	feeUsdg      := new(big.Int).SetBytes(vLog.Data[64:96])
+	feeUsdg := new(big.Int).SetBytes(vLog.Data[64:96])
+	ts := idx.blockTimestamp(client, vLog.BlockNumber)
 
 	_, err := idx.db.Exec(`
 		INSERT INTO deposits
@@ -792,22 +796,21 @@ func (idx *Indexer) handleDeposited(vLog types.Log) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		basket, strings.ToLower(investor.Hex()),
 		usdgAmount.String(), tokensMinted.String(), feeUsdg.String(),
-		int64(vLog.BlockNumber), vLog.TxHash.Hex(),
+		ts, vLog.TxHash.Hex(),
 	)
 	return err
 }
 
-func (idx *Indexer) handleRedeemed(vLog types.Log) error {
+func (idx *Indexer) handleRedeemed(client *ethclient.Client, vLog types.Log) error {
 	if len(vLog.Topics) < 2 || len(vLog.Data) < 96 {
 		return nil
 	}
-
 	investor := common.HexToAddress(vLog.Topics[1].Hex())
-	basket   := strings.ToLower(vLog.Address.Hex())
-
+	basket := strings.ToLower(vLog.Address.Hex())
 	tokensBurned := new(big.Int).SetBytes(vLog.Data[0:32])
 	usdgReturned := new(big.Int).SetBytes(vLog.Data[32:64])
-	feeUsdg      := new(big.Int).SetBytes(vLog.Data[64:96])
+	feeUsdg := new(big.Int).SetBytes(vLog.Data[64:96])
+	ts := idx.blockTimestamp(client, vLog.BlockNumber)
 
 	_, err := idx.db.Exec(`
 		INSERT INTO redemptions
@@ -815,42 +818,42 @@ func (idx *Indexer) handleRedeemed(vLog types.Log) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		basket, strings.ToLower(investor.Hex()),
 		tokensBurned.String(), usdgReturned.String(), feeUsdg.String(),
-		int64(vLog.BlockNumber), vLog.TxHash.Hex(),
+		ts, vLog.TxHash.Hex(),
 	)
 	return err
 }
 
-func (idx *Indexer) handleRebalanced(vLog types.Log) error {
+func (idx *Indexer) handleRebalanced(client *ethclient.Client, vLog types.Log) error {
 	if len(vLog.Topics) < 2 {
 		return nil
 	}
-
 	triggeredBy := common.HexToAddress(vLog.Topics[1].Hex())
-	basket      := strings.ToLower(vLog.Address.Hex())
+	basket := strings.ToLower(vLog.Address.Hex())
+	ts := idx.blockTimestamp(client, vLog.BlockNumber)
 
 	_, err := idx.db.Exec(`
 		INSERT INTO rebalances (basket_address, triggered_by, timestamp, tx_hash)
 		VALUES (?, ?, ?, ?)`,
 		basket, strings.ToLower(triggeredBy.Hex()),
-		int64(vLog.BlockNumber), vLog.TxHash.Hex(),
+		ts, vLog.TxHash.Hex(),
 	)
 	return err
 }
 
-func (idx *Indexer) handleFeeSnapshot(vLog types.Log) error {
+func (idx *Indexer) handleFeeSnapshot(client *ethclient.Client, vLog types.Log) error {
 	if len(vLog.Topics) < 2 || len(vLog.Data) < 32 {
 		return nil
 	}
-
-	basket     := strings.ToLower(vLog.Address.Hex())
+	basket := strings.ToLower(vLog.Address.Hex())
 	snapshotID := new(big.Int).SetBytes(vLog.Topics[1].Bytes()).Int64()
 	usdgAmount := new(big.Int).SetBytes(vLog.Data[0:32])
+	ts := idx.blockTimestamp(client, vLog.BlockNumber)
 
 	_, err := idx.db.Exec(`
 		INSERT INTO fee_snapshots (basket_address, snapshot_id, usdg_amount, timestamp, tx_hash)
 		VALUES (?, ?, ?, ?, ?)`,
 		basket, snapshotID, usdgAmount.String(),
-		int64(vLog.BlockNumber), vLog.TxHash.Hex(),
+		ts, vLog.TxHash.Hex(),
 	)
 	return err
 }
@@ -866,11 +869,100 @@ func (idx *Indexer) handleAssetDeactivated(vLog types.Log) {
 	}
 }
 
+func (idx *Indexer) blockTimestamp(client *ethclient.Client, blockNumber uint64) int64 {
+	idx.blockTsMu.Lock()
+	if ts, ok := idx.blockTs[blockNumber]; ok {
+		idx.blockTsMu.Unlock()
+		return int64(ts)
+	}
+	idx.blockTsMu.Unlock()
+
+	header, err := client.HeaderByNumber(idx.ctx, new(big.Int).SetUint64(blockNumber))
+	if err != nil {
+		log.Printf("indexer: blockTimestamp(%d): %v — using block number as fallback", blockNumber, err)
+		return int64(blockNumber)
+	}
+
+	ts := header.Time
+	idx.blockTsMu.Lock()
+	idx.blockTs[blockNumber] = ts
+	idx.blockTsMu.Unlock()
+
+	return int64(ts)
+}
+
 func (idx *Indexer) handleBasketSuspended(vLog types.Log) {
 	basket := strings.ToLower(vLog.Address.Hex())
 	_, err := idx.db.Exec(`UPDATE baskets SET suspended = 1 WHERE address = ?`, basket)
 	if err != nil {
 		log.Printf("indexer: suspend basket: %v", err)
+	}
+}
+
+func (idx *Indexer) migrateBlockNumberTimestamps() {
+	client, err := idx.newHTTPClient()
+	if err != nil {
+		log.Printf("indexer: migrate timestamps dial error: %v", err)
+		return
+	}
+	defer client.Close()
+
+	type tableCol struct {
+		table    string
+		keyCol   string
+		keyVal   string
+	}
+
+	tables := []struct {
+		table  string
+		idCol  string
+	}{
+		{"deposits",     "id"},
+		{"redemptions",  "id"},
+		{"rebalances",   "id"},
+		{"fee_snapshots","id"},
+	}
+
+	for _, t := range tables {
+		rows, err := idx.db.Query(
+			`SELECT `+t.idCol+`, timestamp FROM `+t.table+` WHERE timestamp < 1000000000`,
+		)
+		if err != nil {
+			log.Printf("indexer: migrate %s query: %v", t.table, err)
+			continue
+		}
+
+		type row struct {
+			id          int64
+			blockNumber uint64
+		}
+		var bad []row
+		for rows.Next() {
+			var r row
+			if rows.Scan(&r.id, &r.blockNumber) == nil {
+				bad = append(bad, r)
+			}
+		}
+		rows.Close()
+
+		if len(bad) == 0 {
+			continue
+		}
+
+		log.Printf("indexer: migrating %d rows in %s with block-number timestamps", len(bad), t.table)
+
+		for _, r := range bad {
+			ts := idx.blockTimestamp(client, r.blockNumber)
+			_, err := idx.db.Exec(
+				`UPDATE `+t.table+` SET timestamp = ? WHERE `+t.idCol+` = ?`,
+				ts, r.id,
+			)
+			if err != nil {
+				log.Printf("indexer: migrate %s id=%d: %v", t.table, r.id, err)
+			}
+		}
+
+		log.Printf("indexer: migration complete for %s", t.table)
 	}
 }
 
@@ -910,7 +1002,7 @@ func (idx *Indexer) subscribe() error {
 		case err := <-sub.Err():
 			return err
 		case vLog := <-logs:
-			idx.handleLog(vLog)
+			idx.handleLog(client, vLog)
 		}
 	}
 }
