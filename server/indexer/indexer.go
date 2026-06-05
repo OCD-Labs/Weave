@@ -149,7 +149,6 @@ func New(ctx context.Context, wsURL, rpcURL, registryAddr string, deployBlock in
 }
 
 func (idx *Indexer) Run() {
-	idx.migrateBlockNumberTimestamps()
 	idx.syncFromChain()
 	idx.scanTransactionalEvents()
 
@@ -896,73 +895,6 @@ func (idx *Indexer) handleBasketSuspended(vLog types.Log) {
 	_, err := idx.db.Exec(`UPDATE baskets SET suspended = 1 WHERE address = ?`, basket)
 	if err != nil {
 		log.Printf("indexer: suspend basket: %v", err)
-	}
-}
-
-func (idx *Indexer) migrateBlockNumberTimestamps() {
-	client, err := idx.newHTTPClient()
-	if err != nil {
-		log.Printf("indexer: migrate timestamps dial error: %v", err)
-		return
-	}
-	defer client.Close()
-
-	type tableCol struct {
-		table    string
-		keyCol   string
-		keyVal   string
-	}
-
-	tables := []struct {
-		table  string
-		idCol  string
-	}{
-		{"deposits",     "id"},
-		{"redemptions",  "id"},
-		{"rebalances",   "id"},
-		{"fee_snapshots","id"},
-	}
-
-	for _, t := range tables {
-		rows, err := idx.db.Query(
-			`SELECT `+t.idCol+`, timestamp FROM `+t.table+` WHERE timestamp < 1000000000`,
-		)
-		if err != nil {
-			log.Printf("indexer: migrate %s query: %v", t.table, err)
-			continue
-		}
-
-		type row struct {
-			id          int64
-			blockNumber uint64
-		}
-		var bad []row
-		for rows.Next() {
-			var r row
-			if rows.Scan(&r.id, &r.blockNumber) == nil {
-				bad = append(bad, r)
-			}
-		}
-		rows.Close()
-
-		if len(bad) == 0 {
-			continue
-		}
-
-		log.Printf("indexer: migrating %d rows in %s with block-number timestamps", len(bad), t.table)
-
-		for _, r := range bad {
-			ts := idx.blockTimestamp(client, r.blockNumber)
-			_, err := idx.db.Exec(
-				`UPDATE `+t.table+` SET timestamp = ? WHERE `+t.idCol+` = ?`,
-				ts, r.id,
-			)
-			if err != nil {
-				log.Printf("indexer: migrate %s id=%d: %v", t.table, r.id, err)
-			}
-		}
-
-		log.Printf("indexer: migration complete for %s", t.table)
 	}
 }
 
