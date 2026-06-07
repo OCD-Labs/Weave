@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS basket_constituents (
     PRIMARY KEY (basket_address, stock_address)
 );
 
+-- tx_hash + log_index uniquely identifies a single event occurrence.
+-- ON CONFLICT DO NOTHING makes every insert idempotent across restarts.
 CREATE TABLE IF NOT EXISTS deposits (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     basket_address       TEXT NOT NULL,
@@ -32,7 +34,9 @@ CREATE TABLE IF NOT EXISTS deposits (
     basket_tokens_minted TEXT NOT NULL,
     fee_usdg             TEXT NOT NULL,
     timestamp            INTEGER NOT NULL,
-    tx_hash              TEXT NOT NULL
+    tx_hash              TEXT NOT NULL,
+    log_index            INTEGER NOT NULL,
+    UNIQUE(tx_hash, log_index)
 );
 
 CREATE TABLE IF NOT EXISTS redemptions (
@@ -43,7 +47,9 @@ CREATE TABLE IF NOT EXISTS redemptions (
     usdg_returned        TEXT NOT NULL,
     fee_usdg             TEXT NOT NULL,
     timestamp            INTEGER NOT NULL,
-    tx_hash              TEXT NOT NULL
+    tx_hash              TEXT NOT NULL,
+    log_index            INTEGER NOT NULL,
+    UNIQUE(tx_hash, log_index)
 );
 
 CREATE TABLE IF NOT EXISTS rebalances (
@@ -51,7 +57,9 @@ CREATE TABLE IF NOT EXISTS rebalances (
     basket_address TEXT NOT NULL,
     triggered_by   TEXT NOT NULL,
     timestamp      INTEGER NOT NULL,
-    tx_hash        TEXT NOT NULL
+    tx_hash        TEXT NOT NULL,
+    log_index      INTEGER NOT NULL,
+    UNIQUE(tx_hash, log_index)
 );
 
 CREATE TABLE IF NOT EXISTS fee_snapshots (
@@ -60,7 +68,9 @@ CREATE TABLE IF NOT EXISTS fee_snapshots (
     snapshot_id    INTEGER NOT NULL,
     usdg_amount    TEXT NOT NULL,
     timestamp      INTEGER NOT NULL,
-    tx_hash        TEXT NOT NULL
+    tx_hash        TEXT NOT NULL,
+    log_index      INTEGER NOT NULL,
+    UNIQUE(tx_hash, log_index)
 );
 
 CREATE TABLE IF NOT EXISTS supported_assets (
@@ -88,17 +98,11 @@ CREATE TABLE IF NOT EXISTS nav_history (
     timestamp        INTEGER NOT NULL
 );
 
--- Cursor table for event block scanning. Tracks the last processed block
--- per named stream so restarts resume from where they left off rather than
--- re-scanning the entire chain history.
 CREATE TABLE IF NOT EXISTS sync_cursors (
     key       TEXT PRIMARY KEY,
     block_num INTEGER NOT NULL DEFAULT 0
 );
 
--- Database-backed cache for live basket state fetched via basketState() RPC.
--- Shared across all backend instances — any instance can serve a cache hit.
--- cached_at is a Unix timestamp; entries older than 30 seconds are stale.
 CREATE TABLE IF NOT EXISTS basket_state_cache (
     basket_address       TEXT PRIMARY KEY,
     constituents_json    TEXT NOT NULL,
@@ -111,9 +115,6 @@ CREATE TABLE IF NOT EXISTS basket_state_cache (
     cached_at            INTEGER NOT NULL
 );
 
--- Database-backed cache for claimable revenue amounts per (wallet, snapshot).
--- Populated on first creator dashboard load; refreshed after 60 seconds.
--- Eliminates repeated on-chain calls for unchanged snapshot data.
 CREATE TABLE IF NOT EXISTS creator_claimable_cache (
     wallet_address TEXT NOT NULL,
     snapshot_id    INTEGER NOT NULL,
@@ -123,7 +124,14 @@ CREATE TABLE IF NOT EXISTS creator_claimable_cache (
     PRIMARY KEY (wallet_address, snapshot_id, basket_address)
 );
 
--- Indexes for the query patterns the API uses most.
+-- Tracks per-basket seeding failure counts so the seed loop
+-- does not retry permanently broken baskets on every startup.
+CREATE TABLE IF NOT EXISTS basket_seed_failures (
+    basket_address TEXT PRIMARY KEY,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    last_attempt   INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_deposits_basket      ON deposits(basket_address);
 CREATE INDEX IF NOT EXISTS idx_deposits_investor    ON deposits(investor_address);
 CREATE INDEX IF NOT EXISTS idx_redemptions_basket   ON redemptions(basket_address);
