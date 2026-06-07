@@ -21,6 +21,10 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
+// rpcTimeout is the per-call deadline applied to every outbound RPC request
+// made by the API handlers.
+const rpcTimeout = 15 * time.Second
+
 // snapshotEntry is shared between getCreatorDashboard and getClaimableSnapshots.
 type snapshotEntry struct {
 	SnapshotID    int64  `json:"snapshotId"`
@@ -63,10 +67,27 @@ type handler struct {
 	openAIModel string
 }
 
-// ── Marketplace ───────────────────────────────────────────────────────────────
+// Marketplace
+
+type BasketSummary struct {
+	Address          string               `json:"address"`
+	CreatorToken     string               `json:"creatorToken"`
+	Creator          string               `json:"creator"`
+	Name             string               `json:"name"`
+	Symbol           string               `json:"symbol"`
+	Thesis           string               `json:"thesis"`
+	Rebalancing      bool                 `json:"rebalancingEnabled"`
+	DriftThreshold   *int64               `json:"driftThresholdBps"`
+	CreatedAt        int64                `json:"createdAt"`
+	Suspended        bool                 `json:"suspended"`
+	NavPerToken      string               `json:"navPerToken"`
+	TotalValueUsdg   string               `json:"totalValueUsdg"`
+	NavChange24hPct  string               `json:"navChange24hPct"`
+	ConstituentCount int                  `json:"constituentCount"`
+	Constituents     []constituentSummary `json:"constituents"`
+}
 
 func (h *handler) listBaskets(w http.ResponseWriter, r *http.Request) {
-	// Fetch all baskets with their latest NAV and 24h-ago NAV in one query.
 	rows, err := h.db.Query(`
 		SELECT
 			b.address,
@@ -105,26 +126,8 @@ func (h *handler) listBaskets(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
+	defer rows.Close()
 
-	type BasketSummary struct {
-		Address          string               `json:"address"`
-		CreatorToken     string               `json:"creatorToken"`
-		Creator          string               `json:"creator"`
-		Name             string               `json:"name"`
-		Symbol           string               `json:"symbol"`
-		Thesis           string               `json:"thesis"`
-		Rebalancing      bool                 `json:"rebalancingEnabled"`
-		DriftThreshold   *int64               `json:"driftThresholdBps"`
-		CreatedAt        int64                `json:"createdAt"`
-		Suspended        bool                 `json:"suspended"`
-		NavPerToken      string               `json:"navPerToken"`
-		TotalValueUsdg   string               `json:"totalValueUsdg"`
-		NavChange24hPct  string               `json:"navChange24hPct"`
-		ConstituentCount int                  `json:"constituentCount"`
-		Constituents     []constituentSummary `json:"constituents"`
-	}
-
-	// Index by address for constituent attachment below.
 	var order []string
 	byAddr := make(map[string]*BasketSummary)
 
@@ -154,20 +157,19 @@ func (h *handler) listBaskets(w http.ResponseWriter, r *http.Request) {
 		order = append(order, b.Address)
 		byAddr[b.Address] = &b
 	}
-	rows.Close()
 
 	if len(byAddr) == 0 {
 		jsonOK(w, []BasketSummary{})
 		return
 	}
 
-	// Fetch all constituents for all baskets in one query, group in Go.
 	cRows, err := h.db.Query(`
 		SELECT bc.basket_address, bc.stock_address, bc.symbol, bc.target_weight_bps, COALESCE(sa.sector,'')
 		FROM basket_constituents bc
 		LEFT JOIN supported_assets sa ON sa.address = bc.stock_address
 		ORDER BY bc.basket_address, bc.display_order`)
 	if err == nil {
+		defer cRows.Close()
 		for cRows.Next() {
 			var basketAddr, stockAddr, sym, sector string
 			var weight int64
@@ -183,7 +185,6 @@ func (h *handler) listBaskets(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		cRows.Close()
 	}
 
 	result := make([]BasketSummary, 0, len(order))
@@ -201,7 +202,7 @@ type constituentSummary struct {
 	Sector          string `json:"sector"`
 }
 
-// ── Basket Detail ─────────────────────────────────────────────────────────────
+// Basket Detail
 
 func (h *handler) getBasket(w http.ResponseWriter, r *http.Request) {
 	addr := strings.ToLower(r.PathValue("address"))
@@ -246,62 +247,59 @@ func (h *handler) getBasket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Live basket state — read from DB cache, refresh if stale (> 30s).
-	state, err := h.getBasketStateFromCache(addr)
+	state, err := h.getBasketStateFromCache(r.Context(), addr)
 	if err != nil {
 		log.Printf("api: getBasketStateFromCache(%s): %v", addr, err)
 	}
 
-	// Performance history.
-	perfRows, _ := h.db.Query(`
-		SELECT nav_per_token, total_value_usdg, timestamp
-		FROM nav_history WHERE basket_address = ?
-		ORDER BY timestamp ASC`, addr)
-	defer perfRows.Close()
-
-	type PerfPoint struct {
+	// Performance history
+	var perf []struct {
 		NavPerToken    string `json:"navPerToken"`
 		TotalValueUsdg string `json:"totalValueUsdg"`
 		Timestamp      int64  `json:"timestamp"`
 	}
-	var perf []PerfPoint
-	for perfRows.Next() {
-		var p PerfPoint
-		if perfRows.Scan(&p.NavPerToken, &p.TotalValueUsdg, &p.Timestamp) == nil {
-			perf = append(perf, p)
+	perf = []struct {
+		NavPerToken    string `json:"navPerToken"`
+		TotalValueUsdg string `json:"totalValueUsdg"`
+		Timestamp      int64  `json:"timestamp"`
+	}{}
+	if perfRows, err := h.db.Query(`
+		SELECT nav_per_token, total_value_usdg, timestamp
+		FROM nav_history WHERE basket_address = ?
+		ORDER BY timestamp ASC`, addr); err == nil {
+		defer perfRows.Close()
+		for perfRows.Next() {
+			var p struct {
+				NavPerToken    string `json:"navPerToken"`
+				TotalValueUsdg string `json:"totalValueUsdg"`
+				Timestamp      int64  `json:"timestamp"`
+			}
+			if perfRows.Scan(&p.NavPerToken, &p.TotalValueUsdg, &p.Timestamp) == nil {
+				perf = append(perf, p)
+			}
 		}
-	}
-	if perf == nil {
-		perf = []PerfPoint{}
 	}
 
 	// Rebalance history.
-	rebRows, _ := h.db.Query(`
-		SELECT timestamp, tx_hash, triggered_by FROM rebalances
-		WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 50`, addr)
-	defer rebRows.Close()
-
 	type RebalanceEntry struct {
 		Timestamp   int64  `json:"timestamp"`
 		TxHash      string `json:"txHash"`
 		TriggeredBy string `json:"triggeredBy"`
 	}
-	var rebalHistory []RebalanceEntry
-	for rebRows.Next() {
-		var e RebalanceEntry
-		if rebRows.Scan(&e.Timestamp, &e.TxHash, &e.TriggeredBy) == nil {
-			rebalHistory = append(rebalHistory, e)
+	rebalHistory := []RebalanceEntry{}
+	if rebRows, err := h.db.Query(`
+		SELECT timestamp, tx_hash, triggered_by FROM rebalances
+		WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 50`, addr); err == nil {
+		defer rebRows.Close()
+		for rebRows.Next() {
+			var e RebalanceEntry
+			if rebRows.Scan(&e.Timestamp, &e.TxHash, &e.TriggeredBy) == nil {
+				rebalHistory = append(rebalHistory, e)
+			}
 		}
-	}
-	if rebalHistory == nil {
-		rebalHistory = []RebalanceEntry{}
 	}
 
 	// Deposit history.
-	depRows, _ := h.db.Query(`
-		SELECT investor_address, usdg_amount, basket_tokens_minted, timestamp, tx_hash
-		FROM deposits WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 50`, addr)
-	defer depRows.Close()
-
 	type DepositEntry struct {
 		Investor           string `json:"investor"`
 		UsdgAmount         string `json:"usdgAmount"`
@@ -309,19 +307,20 @@ func (h *handler) getBasket(w http.ResponseWriter, r *http.Request) {
 		Timestamp          int64  `json:"timestamp"`
 		TxHash             string `json:"txHash"`
 	}
-	var depHistory []DepositEntry
-	for depRows.Next() {
-		var e DepositEntry
-		if depRows.Scan(&e.Investor, &e.UsdgAmount, &e.BasketTokensMinted, &e.Timestamp, &e.TxHash) == nil {
-			depHistory = append(depHistory, e)
+	depHistory := []DepositEntry{}
+	if depRows, err := h.db.Query(`
+		SELECT investor_address, usdg_amount, basket_tokens_minted, timestamp, tx_hash
+		FROM deposits WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 50`, addr); err == nil {
+		defer depRows.Close()
+		for depRows.Next() {
+			var e DepositEntry
+			if depRows.Scan(&e.Investor, &e.UsdgAmount, &e.BasketTokensMinted, &e.Timestamp, &e.TxHash) == nil {
+				depHistory = append(depHistory, e)
+			}
 		}
 	}
-	if depHistory == nil {
-		depHistory = []DepositEntry{}
-	}
 
-	// NAV change figures.
-	var navPerToken, totalValueUsdg, navChange24h, navChange7d, navChange30d string
+	var navPerToken, totalValueUsdg string
 	var maxDriftBps int64
 	var needsRebalancing bool
 
@@ -331,47 +330,69 @@ func (h *handler) getBasket(w http.ResponseWriter, r *http.Request) {
 		maxDriftBps = state.MaxDriftBps
 		needsRebalancing = state.NeedsRebalancing
 	} else {
-		// Fall back to latest nav_history entry.
 		h.db.QueryRow(`
 			SELECT nav_per_token, total_value_usdg FROM nav_history
 			WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 1`, addr,
 		).Scan(&navPerToken, &totalValueUsdg)
 	}
 
-	navChange24h = h.navChangePct(addr, 86400)
-	navChange7d = h.navChangePct(addr, 86400*7)
-	navChange30d = h.navChangePct(addr, 86400*30)
+	navChange24h := h.navChangePct(addr, 86400)
+	navChange7d := h.navChangePct(addr, 86400*7)
+	navChange30d := h.navChangePct(addr, 86400*30)
 
-	constituentsOut := []interface{}{}
-	if state != nil {
-		if v, ok := state.constituentsJSON().([]interface{}); ok && v != nil {
-			constituentsOut = v
-		}
+	// Use the raw JSON string directly — avoids an unmarshal+re-marshal.
+	constituentsRaw := json.RawMessage("[]")
+	if state != nil && state.ConstituentsJSON != "" {
+		constituentsRaw = json.RawMessage(state.ConstituentsJSON)
 	}
 
-	jsonOK(w, map[string]any{
-		"address":            b.Address,
-		"creatorToken":       b.CreatorToken,
-		"creator":            b.Creator,
-		"name":               b.Name,
-		"symbol":             b.Symbol,
-		"thesis":             b.Thesis,
-		"rebalancingEnabled": b.Rebalancing,
-		"driftThresholdBps":  b.DriftThreshold,
-		"createdAt":          b.CreatedAt,
-		"suspended":          b.Suspended,
-		"navPerToken":        navPerToken,
-		"totalValueUsdg":     totalValueUsdg,
-		"navChange24hPct":    navChange24h,
-		"navChange7dPct":     navChange7d,
-		"navChange30dPct":    navChange30d,
-		"maxDriftBps":        maxDriftBps,
-		"needsRebalancing":   needsRebalancing,
-		"constituents":       constituentsOut,
-		"performanceHistory": perf,
-		"rebalanceHistory":   rebalHistory,
-		"depositHistory":     depHistory,
+	jsonOK(w, BasketDetailResponse{
+		Address:            b.Address,
+		CreatorToken:       b.CreatorToken,
+		Creator:            b.Creator,
+		Name:               b.Name,
+		Symbol:             b.Symbol,
+		Thesis:             b.Thesis,
+		RebalancingEnabled: b.Rebalancing,
+		DriftThresholdBps:  b.DriftThreshold,
+		CreatedAt:          b.CreatedAt,
+		Suspended:          b.Suspended,
+		NavPerToken:        navPerToken,
+		TotalValueUsdg:     totalValueUsdg,
+		NavChange24hPct:    navChange24h,
+		NavChange7dPct:     navChange7d,
+		NavChange30dPct:    navChange30d,
+		MaxDriftBps:        maxDriftBps,
+		NeedsRebalancing:   needsRebalancing,
+		Constituents:       constituentsRaw,
+		PerformanceHistory: perf,
+		RebalanceHistory:   rebalHistory,
+		DepositHistory:     depHistory,
 	})
+}
+
+type BasketDetailResponse struct {
+	Address            string          `json:"address"`
+	CreatorToken       string          `json:"creatorToken"`
+	Creator            string          `json:"creator"`
+	Name               string          `json:"name"`
+	Symbol             string          `json:"symbol"`
+	Thesis             string          `json:"thesis"`
+	RebalancingEnabled bool            `json:"rebalancingEnabled"`
+	DriftThresholdBps  *int64          `json:"driftThresholdBps"`
+	CreatedAt          int64           `json:"createdAt"`
+	Suspended          bool            `json:"suspended"`
+	NavPerToken        string          `json:"navPerToken"`
+	TotalValueUsdg     string          `json:"totalValueUsdg"`
+	NavChange24hPct    string          `json:"navChange24hPct"`
+	NavChange7dPct     string          `json:"navChange7dPct"`
+	NavChange30dPct    string          `json:"navChange30dPct"`
+	MaxDriftBps        int64           `json:"maxDriftBps"`
+	NeedsRebalancing   bool            `json:"needsRebalancing"`
+	Constituents       json.RawMessage `json:"constituents"`
+	PerformanceHistory any             `json:"performanceHistory"`
+	RebalanceHistory   any             `json:"rebalanceHistory"`
+	DepositHistory     any             `json:"depositHistory"`
 }
 
 // basketStateCache is the shape stored in and read from basket_state_cache.
@@ -387,21 +408,10 @@ type basketStateCache struct {
 	CachedAt           int64
 }
 
-func (c *basketStateCache) constituentsJSON() any {
-	if c == nil || c.ConstituentsJSON == "" {
-		return []any{}
-	}
-	var v any
-	if err := json.Unmarshal([]byte(c.ConstituentsJSON), &v); err != nil {
-		return []any{}
-	}
-	return v
-}
-
 // getBasketStateFromCache reads from basket_state_cache if the entry is
 // within 30 seconds. If stale or absent, reads live from the RPC node,
 // writes the result back to the cache, and returns it.
-func (h *handler) getBasketStateFromCache(basketAddr string) (*basketStateCache, error) {
+func (h *handler) getBasketStateFromCache(ctx context.Context, basketAddr string) (*basketStateCache, error) {
 	var c basketStateCache
 	var needsRebal int
 
@@ -412,18 +422,15 @@ func (h *handler) getBasketStateFromCache(basketAddr string) (*basketStateCache,
 		&c.BasketAddress, &c.ConstituentsJSON, &c.CurrentWeightsJSON, &c.BalancesJSON,
 		&c.TotalValueUsdg, &c.NavPerToken, &c.MaxDriftBps, &needsRebal, &c.CachedAt,
 	)
-
 	c.NeedsRebalancing = needsRebal == 1
 
 	if err == nil && time.Now().Unix()-c.CachedAt <= 30 {
 		return &c, nil
 	}
 
-	// Cache miss or stale — fetch live and refresh.
-	fresh, err := h.fetchBasketStateRPC(basketAddr)
+	fresh, err := h.fetchBasketStateRPC(ctx, basketAddr)
 	if err != nil {
 		if c.BasketAddress != "" {
-			// Return stale data rather than nothing if the RPC call fails.
 			return &c, nil
 		}
 		return nil, err
@@ -433,7 +440,7 @@ func (h *handler) getBasketStateFromCache(basketAddr string) (*basketStateCache,
 	return fresh, nil
 }
 
-func (h *handler) fetchBasketStateRPC(basketAddr string) (*basketStateCache, error) {
+func (h *handler) fetchBasketStateRPC(ctx context.Context, basketAddr string) (*basketStateCache, error) {
 	basketStateABI, _ := abi.JSON(strings.NewReader(`[{
 		"inputs": [],
 		"name": "basketState",
@@ -457,14 +464,21 @@ func (h *handler) fetchBasketStateRPC(basketAddr string) (*basketStateCache, err
 		rpcURL = "https://rpc.testnet.chain.robinhood.com"
 	}
 
-	client, err := ethclient.DialContext(context.Background(), rpcURL)
+	dialCtx, dialCancel := context.WithTimeout(ctx, rpcTimeout)
+	defer dialCancel()
+
+	client, err := ethclient.DialContext(dialCtx, rpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
 	defer client.Close()
 
 	addr := common.HexToAddress(basketAddr)
-	data, err := client.CallContract(context.Background(), ethereum.CallMsg{
+
+	callCtx, callCancel := context.WithTimeout(ctx, rpcTimeout)
+	defer callCancel()
+
+	data, err := client.CallContract(callCtx, ethereum.CallMsg{
 		To:   &addr,
 		Data: basketStateABI.Methods["basketState"].ID,
 	}, nil)
@@ -512,13 +526,13 @@ func (h *handler) fetchBasketStateRPC(basketAddr string) (*basketStateCache, err
 			args...,
 		)
 		if err == nil {
+			defer metaRows.Close()
 			for metaRows.Next() {
 				var a, sym, nm, sec string
 				if metaRows.Scan(&a, &sym, &nm, &sec) == nil {
 					metaByAddr[a] = assetMeta{symbol: sym, name: nm, sector: sec}
 				}
 			}
-			metaRows.Close()
 		}
 
 		type priceInfo struct {
@@ -556,6 +570,7 @@ func (h *handler) fetchBasketStateRPC(basketAddr string) (*basketStateCache, err
 			)`, args...,
 		)
 		if err == nil {
+			defer priceRows.Close()
 			for priceRows.Next() {
 				var a, cur string
 				var chg float64
@@ -566,20 +581,6 @@ func (h *handler) fetchBasketStateRPC(basketAddr string) (*basketStateCache, err
 					}
 				}
 			}
-			priceRows.Close()
-		}
-
-		type constituentDetail struct {
-			Address           string `json:"address"`
-			Symbol            string `json:"symbol"`
-			Name              string `json:"name"`
-			Sector            string `json:"sector"`
-			TargetWeightBps   string `json:"targetWeightBps"`
-			CurrentWeightBps  string `json:"currentWeightBps"`
-			BalanceRaw        string `json:"balanceRaw"`
-			PriceUsdg         string `json:"priceUsdg"`
-			ValueUsdg         string `json:"valueUsdg"`
-			PriceChange24hPct string `json:"priceChange24hPct"`
 		}
 
 		details := make([]constituentDetail, 0, len(constituents))
@@ -599,15 +600,12 @@ func (h *handler) fetchBasketStateRPC(basketAddr string) (*basketStateCache, err
 				bal = balances[i].String()
 			}
 
-			// valueUsdg = balanceRaw (18-dec) * priceUsdg (8-dec) / 1e20
-			// result is 6-dec USDG matching totalValueUsdg units
 			valueUsdg := "0"
 			if price.currentPrice != "" && bal != "0" {
 				balBig := new(big.Int)
 				priceBig := new(big.Int)
 				if _, ok := balBig.SetString(bal, 10); ok {
 					if _, ok := priceBig.SetString(price.currentPrice, 10); ok {
-						// balBig * priceBig / 1e20
 						val := new(big.Int).Mul(balBig, priceBig)
 						val.Div(val, new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil))
 						valueUsdg = val.String()
@@ -675,6 +673,19 @@ func (h *handler) fetchBasketStateRPC(basketAddr string) (*basketStateCache, err
 	}, nil
 }
 
+type constituentDetail struct {
+	Address           string `json:"address"`
+	Symbol            string `json:"symbol"`
+	Name              string `json:"name"`
+	Sector            string `json:"sector"`
+	TargetWeightBps   string `json:"targetWeightBps"`
+	CurrentWeightBps  string `json:"currentWeightBps"`
+	BalanceRaw        string `json:"balanceRaw"`
+	PriceUsdg         string `json:"priceUsdg"`
+	ValueUsdg         string `json:"valueUsdg"`
+	PriceChange24hPct string `json:"priceChange24hPct"`
+}
+
 func (h *handler) writeBasketStateCache(c *basketStateCache) {
 	needsRebal := 0
 	if c.NeedsRebalancing {
@@ -720,7 +731,7 @@ func (h *handler) navChangePct(basketAddr string, windowSecs int64) string {
 	return pctChange(prior, current)
 }
 
-// ── Catalogue ─────────────────────────────────────────────────────────────────
+// Catalogue
 
 func (h *handler) getCatalogue(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(`
@@ -753,17 +764,6 @@ func (h *handler) getCatalogue(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	type Asset struct {
-		Address           string `json:"address"`
-		Symbol            string `json:"symbol"`
-		Name              string `json:"name"`
-		Sector            string `json:"sector"`
-		Oracle            string `json:"oracle"`
-		Active            bool   `json:"isActive"`
-		CurrentPrice      string `json:"currentPriceUsdg"`
-		PriceChange24hPct string `json:"priceChange24hPct"`
-	}
-
 	var assets []Asset
 	for rows.Next() {
 		var a Asset
@@ -779,7 +779,6 @@ func (h *handler) getCatalogue(w http.ResponseWriter, r *http.Request) {
 
 		a.Active = active == 1
 		a.PriceChange24hPct = pctChange(price24hAgo, a.CurrentPrice)
-
 		assets = append(assets, a)
 	}
 
@@ -788,6 +787,17 @@ func (h *handler) getCatalogue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonOK(w, assets)
+}
+
+type Asset struct {
+	Address           string `json:"address"`
+	Symbol            string `json:"symbol"`
+	Name              string `json:"name"`
+	Sector            string `json:"sector"`
+	Oracle            string `json:"oracle"`
+	Active            bool   `json:"isActive"`
+	CurrentPrice      string `json:"currentPriceUsdg"`
+	PriceChange24hPct string `json:"priceChange24hPct"`
 }
 
 func (h *handler) getCatalogueAsset(w http.ResponseWriter, r *http.Request) {
@@ -818,7 +828,6 @@ func (h *handler) getCatalogueAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	a.Active = active == 1
 
-	// Fetch latest price and 24h change from price_history.
 	var currentPrice, prev24h string
 	h.db.QueryRow(`
 		SELECT price_usdg FROM price_history
@@ -889,7 +898,7 @@ func (h *handler) getPrices(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, prices)
 }
 
-// ── Positions ─────────────────────────────────────────────────────────────────
+// Positions
 
 func (h *handler) getBasketPerformance(w http.ResponseWriter, r *http.Request) {
 	addr := strings.ToLower(r.PathValue("address"))
@@ -942,20 +951,19 @@ func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 	).Scan(&basketName, &basketSymbol, &navStr)
 
 	constituents := []constituentSummary{}
-	cRows, err := h.db.Query(`
+	if cRows, err := h.db.Query(`
 		SELECT bc.stock_address, bc.symbol, bc.target_weight_bps, COALESCE(sa.sector,'')
 		FROM basket_constituents bc
 		LEFT JOIN supported_assets sa ON sa.address = bc.stock_address
 		WHERE bc.basket_address = ?
-		ORDER BY bc.display_order`, basketAddr)
-	if err == nil {
+		ORDER BY bc.display_order`, basketAddr); err == nil {
+		defer cRows.Close()
 		for cRows.Next() {
 			var c constituentSummary
 			if cRows.Scan(&c.Address, &c.Symbol, &c.TargetWeightBps, &c.Sector) == nil {
 				constituents = append(constituents, c)
 			}
 		}
-		cRows.Close()
 	}
 
 	var totalDeposited, totalRedeemed string
@@ -972,8 +980,12 @@ func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 
 	dep, _ := new(big.Float).SetString(totalDeposited)
 	red, _ := new(big.Float).SetString(totalRedeemed)
-	if dep == nil { dep = new(big.Float) }
-	if red == nil { red = new(big.Float) }
+	if dep == nil {
+		dep = new(big.Float)
+	}
+	if red == nil {
+		red = new(big.Float)
+	}
 
 	var tokensMinted, tokensBurned string
 	h.db.QueryRow(`
@@ -989,12 +1001,18 @@ func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 
 	minted, _ := new(big.Float).SetString(tokensMinted)
 	burned, _ := new(big.Float).SetString(tokensBurned)
-	if minted == nil { minted = new(big.Float) }
-	if burned == nil { burned = new(big.Float) }
+	if minted == nil {
+		minted = new(big.Float)
+	}
+	if burned == nil {
+		burned = new(big.Float)
+	}
 
 	balance := new(big.Float).Sub(minted, burned)
 	nav, _ := new(big.Float).SetString(navStr)
-	if nav == nil { nav = new(big.Float) }
+	if nav == nil {
+		nav = new(big.Float)
+	}
 
 	currentValue := new(big.Float).Mul(balance, nav)
 	currentValue.Quo(currentValue, new(big.Float).SetFloat64(1e18))
@@ -1023,20 +1041,20 @@ func (h *handler) getPosition(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type basketAgg struct {
+	name               string
+	symbol             string
+	navPerToken        string
+	rebalancingEnabled bool
+	suspended          bool
+	totalDeposited     *big.Float
+	totalRedeemed      *big.Float
+	tokensMinted       *big.Float
+	tokensBurned       *big.Float
+}
+
 func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 	wallet := strings.ToLower(r.PathValue("wallet"))
-
-	type basketAgg struct {
-		name               string
-		symbol             string
-		navPerToken        string
-		rebalancingEnabled bool
-		suspended          bool
-		totalDeposited     *big.Float
-		totalRedeemed      *big.Float
-		tokensMinted       *big.Float
-		tokensBurned       *big.Float
-	}
 
 	agg := make(map[string]*basketAgg)
 	var order []string
@@ -1063,6 +1081,8 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
+	defer depRows.Close()
+
 	for depRows.Next() {
 		var addr, name, symbol, nav string
 		var rebal, susp int
@@ -1083,7 +1103,6 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 		}
 		order = append(order, addr)
 	}
-	depRows.Close()
 
 	redRows, err := h.db.Query(`
 		SELECT basket_address,
@@ -1096,6 +1115,8 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
+	defer redRows.Close()
+
 	for redRows.Next() {
 		var addr string
 		var red, burned float64
@@ -1107,7 +1128,6 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 			a.tokensBurned = new(big.Float).SetFloat64(burned)
 		}
 	}
-	redRows.Close()
 
 	constituentsByBasket := make(map[string][]constituentSummary)
 	if len(order) > 0 {
@@ -1117,14 +1137,14 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 			placeholders[i] = "?"
 			args[i] = addr
 		}
-		cRows, err := h.db.Query(`
+		if cRows, err := h.db.Query(`
 			SELECT bc.basket_address, bc.stock_address, bc.symbol,
 			       bc.target_weight_bps, COALESCE(sa.sector,'')
 			FROM basket_constituents bc
 			LEFT JOIN supported_assets sa ON sa.address = bc.stock_address
 			WHERE bc.basket_address IN (`+strings.Join(placeholders, ",")+`)
-			ORDER BY bc.basket_address, bc.display_order`, args...)
-		if err == nil {
+			ORDER BY bc.basket_address, bc.display_order`, args...); err == nil {
+			defer cRows.Close()
 			for cRows.Next() {
 				var basketAddr string
 				var c constituentSummary
@@ -1132,23 +1152,7 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 					constituentsByBasket[basketAddr] = append(constituentsByBasket[basketAddr], c)
 				}
 			}
-			cRows.Close()
 		}
-	}
-
-	type Position struct {
-		BasketAddress      string             `json:"basketAddress"`
-		BasketName         string             `json:"basketName"`
-		BasketSymbol       string             `json:"basketSymbol"`
-		BasketNavPerToken  string             `json:"basketNavPerToken"`
-		RebalancingEnabled bool               `json:"rebalancingEnabled"`
-		Suspended          bool               `json:"suspended"`
-		BasketTokenBalance string             `json:"basketTokenBalance"`
-		CurrentValueUsdg   string             `json:"currentValueUsdg"`
-		TotalDepositedUsdg string             `json:"totalDepositedUsdg"`
-		UnrealisedPnlUsdg  string             `json:"unrealisedPnlUsdg"`
-		UnrealisedPnlPct   string             `json:"unrealisedPnlPct"`
-		Constituents       []constituentSummary `json:"constituents"`
 	}
 
 	positions := make([]Position, 0, len(order))
@@ -1219,12 +1223,37 @@ func (h *handler) getPortfolio(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── Creator ───────────────────────────────────────────────────────────────────
+type Position struct {
+	BasketAddress      string               `json:"basketAddress"`
+	BasketName         string               `json:"basketName"`
+	BasketSymbol       string               `json:"basketSymbol"`
+	BasketNavPerToken  string               `json:"basketNavPerToken"`
+	RebalancingEnabled bool                 `json:"rebalancingEnabled"`
+	Suspended          bool                 `json:"suspended"`
+	BasketTokenBalance string               `json:"basketTokenBalance"`
+	CurrentValueUsdg   string               `json:"currentValueUsdg"`
+	TotalDepositedUsdg string               `json:"totalDepositedUsdg"`
+	UnrealisedPnlUsdg  string               `json:"unrealisedPnlUsdg"`
+	UnrealisedPnlPct   string               `json:"unrealisedPnlPct"`
+	Constituents       []constituentSummary `json:"constituents"`
+}
+
+// Creator
+
+type BasketEntry struct {
+	BasketAddress      string          `json:"basketAddress"`
+	BasketName         string          `json:"basketName"`
+	BasketSymbol       string          `json:"basketSymbol"`
+	CreatorToken       string          `json:"creatorTokenAddress"`
+	TotalValueUsdg     string          `json:"totalValueUsdg"`
+	TotalClaimableUsdg string          `json:"totalClaimableUsdg"`
+	UnclaimedSnapshots []snapshotEntry `json:"unclaimedSnapshots"`
+	RevenueHistory     []snapshotEntry `json:"revenueHistory"`
+}
 
 func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 	wallet := strings.ToLower(r.PathValue("wallet"))
 
-	// Fetch all baskets this wallet created with their latest NAV in one query.
 	basketRows, err := h.db.Query(`
 		SELECT b.address, b.creator_token_address, b.name, b.symbol,
 		       COALESCE(n.total_value_usdg,'0')
@@ -1243,6 +1272,7 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
+	defer basketRows.Close()
 
 	type basketMeta struct {
 		address      string
@@ -1262,7 +1292,6 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 			baskets[m.address] = &m
 		}
 	}
-	basketRows.Close()
 
 	if len(basketOrder) == 0 {
 		jsonOK(w, map[string]any{
@@ -1273,8 +1302,6 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch ALL fee snapshots for ALL creator baskets in one query.
-	// Build a placeholder list for the IN clause.
 	placeholders := make([]string, len(basketOrder))
 	args := make([]any, len(basketOrder))
 	for i, addr := range basketOrder {
@@ -1292,6 +1319,7 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 
 	snapshotsByBasket := make(map[string][]snapshotEntry)
 	if err == nil {
+		defer snapRows.Close()
 		for snapRows.Next() {
 			var bAddr string
 			var s snapshotEntry
@@ -1299,26 +1327,17 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 				snapshotsByBasket[bAddr] = append(snapshotsByBasket[bAddr], s)
 			}
 		}
-		snapRows.Close()
 	}
 
-	type BasketEntry struct {
-		BasketAddress      string          `json:"basketAddress"`
-		BasketName         string          `json:"basketName"`
-		BasketSymbol       string          `json:"basketSymbol"`
-		CreatorToken       string          `json:"creatorTokenAddress"`
-		TotalValueUsdg     string          `json:"totalValueUsdg"`
-		TotalClaimableUsdg string          `json:"totalClaimableUsdg"`
-		UnclaimedSnapshots []snapshotEntry `json:"unclaimedSnapshots"`
-		RevenueHistory     []snapshotEntry `json:"revenueHistory"`
-	}
-
-	// Open one RPC client for all claimable revenue reads across all baskets.
 	rpcURL := os.Getenv("RPC_URL")
 	if rpcURL == "" {
 		rpcURL = "https://rpc.testnet.chain.robinhood.com"
 	}
-	rpcClient, rpcErr := ethclient.DialContext(context.Background(), rpcURL)
+
+	rpcCtx, rpcCancel := context.WithTimeout(r.Context(), rpcTimeout)
+	defer rpcCancel()
+
+	rpcClient, rpcErr := ethclient.DialContext(rpcCtx, rpcURL)
 	if rpcErr != nil {
 		log.Printf("api: getCreatorDashboard dial: %v", rpcErr)
 		rpcClient = nil
@@ -1337,7 +1356,7 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 			snaps = []snapshotEntry{}
 		}
 
-		unclaimed := h.getClaimableSnapshots(rpcClient, wallet, addr, m.creatorToken, snaps)
+		unclaimed := h.getClaimableSnapshots(rpcCtx, rpcClient, wallet, addr, m.creatorToken, snaps)
 
 		basketClaimable := new(big.Int)
 		for _, s := range unclaimed {
@@ -1368,8 +1387,9 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 
 // getClaimableSnapshots returns claimable amounts per snapshot, reading from
 // creator_claimable_cache if fresh (< 60s), otherwise calling claimableRevenue()
-// on the contract and writing results back to the cache.
+// on the contract.
 func (h *handler) getClaimableSnapshots(
+	ctx context.Context,
 	client *ethclient.Client,
 	wallet, basketAddr, creatorTokenAddr string,
 	snapshots []snapshotEntry,
@@ -1391,8 +1411,6 @@ func (h *handler) getClaimableSnapshots(
 
 	now := time.Now().Unix()
 
-	// Fetch all cached entries for this wallet+basket in one query.
-	// Map key is snapshot_id for O(1) lookup inside the loop.
 	type cachedEntry struct {
 		claimableUsdg string
 		cachedAt      int64
@@ -1406,6 +1424,7 @@ func (h *handler) getClaimableSnapshots(
 		wallet, basketAddr,
 	)
 	if err == nil {
+		defer cacheRows.Close()
 		for cacheRows.Next() {
 			var snapID int64
 			var ce cachedEntry
@@ -1413,7 +1432,6 @@ func (h *handler) getClaimableSnapshots(
 				cache[snapID] = ce
 			}
 		}
-		cacheRows.Close()
 	}
 
 	ctAddr := common.HexToAddress(creatorTokenAddr)
@@ -1427,7 +1445,6 @@ func (h *handler) getClaimableSnapshots(
 			continue
 		}
 
-		// Cache miss or stale — call contract if client is available.
 		claimable := "0"
 		if client != nil {
 			input, err := claimableABI.Pack("claimableRevenue",
@@ -1435,10 +1452,14 @@ func (h *handler) getClaimableSnapshots(
 				new(big.Int).SetInt64(snap.SnapshotID),
 			)
 			if err == nil {
-				data, err := client.CallContract(context.Background(), ethereum.CallMsg{
+				// Per-call timeout within the overall request context.
+				callCtx, callCancel := context.WithTimeout(ctx, rpcTimeout)
+				data, err := client.CallContract(callCtx, ethereum.CallMsg{
 					To:   &ctAddr,
 					Data: input,
 				}, nil)
+				callCancel()
+
 				if err == nil {
 					unpacked, err := claimableABI.Methods["claimableRevenue"].Outputs.Unpack(data)
 					if err == nil && len(unpacked) > 0 {
@@ -1449,7 +1470,6 @@ func (h *handler) getClaimableSnapshots(
 				}
 			}
 
-			// Write back to cache — one upsert per snapshot that was a cache miss.
 			h.db.Exec(`
 				INSERT INTO creator_claimable_cache
 					(wallet_address, snapshot_id, basket_address, claimable_usdg, cached_at)
@@ -1516,18 +1536,18 @@ func (h *handler) getCreatorToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── AI Compose ────────────────────────────────────────────────────────────────
+// AI Compose
 
 func (h *handler) aiCompose(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Thesis string `json:"thesis"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil || len(req.Thesis) < 20 {
+	// 32KB limit
+	if err := json.NewDecoder(io.LimitReader(r.Body, 32768)).Decode(&req); err != nil || len(req.Thesis) < 20 {
 		jsonError(w, "thesis must be at least 20 characters", http.StatusBadRequest)
 		return
 	}
 
-	// Fetch catalogue from the database to pass to the AI composer.
 	rows, err := h.db.Query(`
 		SELECT a.address, a.symbol, a.name, a.sector,
 		       COALESCE(p.price_usdg,'0') AS price
@@ -1571,7 +1591,7 @@ func (h *handler) aiCompose(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, proposal)
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Helpers
 
 func jsonOK(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -1579,12 +1599,12 @@ func jsonOK(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// jsonError returns a JSON error body containing only the message string.
 func jsonError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]any{
+	json.NewEncoder(w).Encode(map[string]string{
 		"error": msg,
-		"code":  code,
 	})
 }
 
