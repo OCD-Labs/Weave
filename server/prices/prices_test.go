@@ -73,13 +73,11 @@ func TestNewPoller_Initialises(t *testing.T) {
 func TestPoller_Poll_NoActiveConstituents(t *testing.T) {
 	database := openTestDB(t)
 
-	// Asset exists but has no basket constituents — must not be polled.
 	database.Exec(`INSERT INTO supported_assets (address, symbol, name, sector, oracle_address, is_active, added_at)
 		VALUES ('0xtoken1', 'TST', 'Test', 'Tech', '0xoracle1', 1, ?)`, time.Now().Unix())
 
 	p := NewPoller("http://localhost:1", "0x0000", database, time.Minute)
 
-	// poll() should return without error — no assets to poll means no RPC calls attempted.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	p.poll(ctx)
@@ -97,7 +95,6 @@ func TestPoller_Poll_SuspendedBasketExcluded(t *testing.T) {
 	database.Exec(`INSERT INTO supported_assets (address, symbol, name, sector, oracle_address, is_active, added_at)
 		VALUES ('0xtoken1', 'TST', 'Test', 'Tech', '0xoracle1', 1, ?)`, time.Now().Unix())
 
-	// Basket is suspended — constituent must not be polled.
 	database.Exec(`INSERT INTO baskets (address, creator_token_address, creator_address, name, symbol, thesis, rebalancing_enabled, created_at, created_tx, suspended)
 		VALUES ('0xbasket1', '0xct1', '0xcreator', 'B', 'B', 't', 0, ?, '', 1)`, time.Now().Unix())
 
@@ -120,7 +117,6 @@ func TestPoller_Poll_SuspendedBasketExcluded(t *testing.T) {
 func TestPoller_Poll_InactiveAssetExcluded(t *testing.T) {
 	database := openTestDB(t)
 
-	// Asset is inactive — must not be polled even if in an active basket.
 	database.Exec(`INSERT INTO supported_assets (address, symbol, name, sector, oracle_address, is_active, added_at)
 		VALUES ('0xtoken1', 'TST', 'Test', 'Tech', '0xoracle1', 0, ?)`, time.Now().Unix())
 
@@ -147,13 +143,9 @@ func TestPoller_ReadOraclePrice_InvalidEndpoint(t *testing.T) {
 	database := openTestDB(t)
 	p := NewPoller("http://localhost:1", "0x0000", database, time.Minute)
 
-	// Dialling a non-existent RPC must not panic — it returns nil.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// We can't call readOraclePrice without a client, so we verify poll handles
-	// the dial error gracefully by running poll against an unreachable RPC.
-	// No panic is the assertion.
 	p.poll(ctx)
 }
 

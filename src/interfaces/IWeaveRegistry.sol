@@ -19,7 +19,7 @@ interface IWeaveRegistry {
         uint256 createdAt;
     }
 
-    // ── Asset catalogue ───────────────────────────────────────────────────────
+    // Asset catalogue
 
     function addAsset(AssetConfig calldata config) external;
     function deactivateAsset(address token) external;
@@ -35,7 +35,7 @@ interface IWeaveRegistry {
         view
         returns (uint256 price, uint256 updatedAt);
 
-    // ── Basket registry ───────────────────────────────────────────────────────
+    // Basket registry
 
     function registerBasket(
         address basket,
@@ -47,7 +47,7 @@ interface IWeaveRegistry {
     function getAllBaskets() external view returns (BasketMeta[] memory);
     function basketMeta(address basket) external view returns (BasketMeta memory);
 
-    // ── Protocol state reads ──────────────────────────────────────────────────
+    // Protocol state reads
 
     function usdg()                     external view returns (address);
     function swapRouter()               external view returns (address);
@@ -64,7 +64,7 @@ interface IWeaveRegistry {
     function maxSwapSlippageBps()       external view returns (uint256);
     function paused()                   external view returns (bool);
 
-    // ── Governance setters ────────────────────────────────────────────────────
+    // Governance setters
 
     function setSwapRouter(address router) external;
     function setManagementFee(uint256 feeBps) external;

@@ -24,8 +24,6 @@ CREATE TABLE IF NOT EXISTS basket_constituents (
     PRIMARY KEY (basket_address, stock_address)
 );
 
--- tx_hash + log_index uniquely identifies a single event occurrence.
--- ON CONFLICT DO NOTHING makes every insert idempotent across restarts.
 CREATE TABLE IF NOT EXISTS deposits (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     basket_address       TEXT NOT NULL,

@@ -23,7 +23,6 @@ import (
 )
 
 // rpcTimeout is the per-call deadline applied to every RPC request.
-// Prevents any single slow or stalled node from blocking the indexer indefinitely.
 const rpcTimeout = 15 * time.Second
 
 // chunkSize is the number of blocks fetched per FilterLogs call.
@@ -34,7 +33,7 @@ const chunkSize = int64(2000)
 const seedMaxAttempts = 5
 
 // blockTsCacheMax is the maximum number of block timestamps held in the
-// bounded FIFO cache. Prevents unbounded memory growth during historical scans.
+// bounded FIFO cache.
 const blockTsCacheMax = 4096
 
 // reconnectBaseDelay is the starting delay for WebSocket reconnection backoff.
@@ -70,8 +69,6 @@ var (
 )
 
 func init() {
-	// All ABI parsing failures panic at startup rather than silently producing
-	// zero-value ABI objects that cause misleading errors at runtime.
 	var err error
 
 	getSupportedAssetsABI, err = abi.JSON(strings.NewReader(`[{
@@ -173,7 +170,6 @@ func init() {
 	}
 
 	// Deposited(address indexed investor, uint256 usdgAmount, uint256 basketTokensMinted, uint256 feeUsdg)
-	// investor is Topics[1]; the three uint256s are in Data.
 	depositedABI = abi.Arguments{
 		{Name: "usdgAmount",         Type: uint256Type},
 		{Name: "basketTokensMinted", Type: uint256Type},
@@ -188,7 +184,6 @@ func init() {
 	}
 
 	// RevenueSnapshoted(uint256 indexed snapshotId, uint256 usdgAmount, uint256 totalSupply)
-	// snapshotId is Topics[1]; usdgAmount and totalSupply are in Data.
 	feeSnapshotABI = abi.Arguments{
 		{Name: "usdgAmount",  Type: uint256Type},
 		{Name: "totalSupply", Type: uint256Type},
@@ -221,8 +216,7 @@ type Indexer struct {
 	blockTsFIFO []blockTsEntry
 }
 
-// New constructs an Indexer. BASKET_FACTORY_ADDRESS is validated at
-// construction time so a missing environment variable fails loudly at startup.
+// New constructs an Indexer.
 func New(
 	ctx context.Context,
 	wsURL, rpcURL, registryAddr string,
@@ -250,8 +244,6 @@ func New(
 
 // Run starts the indexer. It syncs chain state, then launches the historical
 // scan and live subscription concurrently so no events are missed during catchup.
-// Duplicate events from the overlap window are discarded by UNIQUE(tx_hash, log_index).
-// Run blocks until ctx is cancelled.
 func (idx *Indexer) Run() {
 	idx.syncFromChain()
 
@@ -480,7 +472,6 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 
 // seedMissingConstituents fills metadata and constituent rows for any basket
 // that has zero constituent rows and has not exceeded seedMaxAttempts failures.
-// Runs once per startup — not an infinite retry loop.
 func (idx *Indexer) seedMissingConstituents() {
 	rows, err := idx.db.Query(`
 		SELECT b.address
@@ -561,8 +552,7 @@ func (idx *Indexer) recordSeedFailure(basketAddr string) {
 }
 
 // seedOneBasket fetches basketState() plus name/symbol/thesis and writes all
-// constituent rows and basket metadata atomically. Returns an error on any
-// RPC or database failure so the caller can record the failure.
+// constituent rows and basket metadata atomically.
 func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) error {
 	addr := common.HexToAddress(basketAddr)
 
@@ -700,10 +690,7 @@ func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) e
 }
 
 // scanTransactionalEvents performs a cursor-based block scan for deposits,
-// redemptions, rebalances, and fee snapshots. The cursor advance and all log
-// writes for each chunk are committed in the same SQLite transaction, so a
-// crash mid-chunk replays that chunk on the next startup. Duplicate events
-// from re-scans are discarded by UNIQUE(tx_hash, log_index).
+// redemptions, rebalances, and fee snapshots.
 func (idx *Indexer) scanTransactionalEvents() {
 	client, err := idx.newHTTPClient()
 	if err != nil {
@@ -787,9 +774,7 @@ func (idx *Indexer) scanTransactionalEvents() {
 }
 
 // writeChunkAtomic writes all logs for a scan chunk and advances the cursor
-// in a single SQLite transaction. BasketCreated events are handled inline
-// with their own sub-transaction because they also update basketAddrs.
-// Either the whole chunk commits or nothing does.
+// in a single SQLite transaction.
 func (idx *Indexer) writeChunkAtomic(client *ethclient.Client, logs []types.Log, endBlock int64) error {
 	tx, err := idx.db.Begin()
 	if err != nil {
@@ -834,8 +819,7 @@ func (idx *Indexer) writeChunkAtomic(client *ethclient.Client, logs []types.Log,
 }
 
 // writeLog routes a single log to the appropriate write function within an
-// open transaction. Does not handle BasketCreated — that is handled inline
-// by writeChunkAtomic before this function is called.
+// open transaction.
 func (idx *Indexer) writeLog(tx *sql.Tx, client *ethclient.Client, vLog types.Log) error {
 	if len(vLog.Topics) == 0 {
 		return nil
@@ -854,8 +838,7 @@ func (idx *Indexer) writeLog(tx *sql.Tx, client *ethclient.Client, vLog types.Lo
 }
 
 // handleLog is used by the live subscription. Each event type gets its own
-// transaction. Write errors are logged but do not stop the subscription loop
-// since missed events are replayed on reconnection via the scan cursor.
+// transaction.
 func (idx *Indexer) handleLog(client *ethclient.Client, vLog types.Log) {
 	if len(vLog.Topics) == 0 {
 		return
@@ -935,9 +918,6 @@ func (idx *Indexer) handleLog(client *ethclient.Client, vLog types.Log) {
 	}
 }
 
-// handleBasketCreated takes a client so it can resolve the block timestamp
-// correctly. Storing int64(vLog.BlockNumber) as created_at would produce
-// dates in year 4136 — blockTimestamp resolves the actual Unix timestamp.
 func (idx *Indexer) handleBasketCreated(client *ethclient.Client, vLog types.Log) {
 	if len(vLog.Topics) < 4 {
 		log.Printf("indexer: handleBasketCreated: expected 4 topics, got %d — tx=%s", len(vLog.Topics), vLog.TxHash.Hex())
@@ -983,7 +963,6 @@ func (idx *Indexer) handleBasketCreated(client *ethclient.Client, vLog types.Log
 		cRows = append(cRows, constituentRow{addr: cAddr, symbol: cSymbol, weight: weight})
 	}
 
-	// Resolve the actual block timestamp — never store block number as created_at.
 	createdAt := idx.blockTimestamp(client, vLog.BlockNumber)
 
 	tx, err := idx.db.Begin()
@@ -1156,8 +1135,6 @@ func (idx *Indexer) writeFeeSnapshot(tx *sql.Tx, client *ethclient.Client, vLog 
 		return nil
 	}
 
-	// snapshotId is the first indexed parameter — Topics[1].
-	// usdgAmount is the first non-indexed parameter — first word of Data.
 	snapshotID := new(big.Int).SetBytes(vLog.Topics[1].Bytes()).Int64()
 
 	decoded, err := feeSnapshotABI.Unpack(vLog.Data)
@@ -1255,9 +1232,6 @@ func (idx *Indexer) subscribe() error {
 
 	query := ethereum.FilterQuery{Addresses: idx.filterAddresses()}
 
-	// Buffer 512 events. The drain goroutine processes them concurrently
-	// with the receive loop so back-pressure from slow RPC calls in
-	// blockTimestamp does not cause the WebSocket library to drop events.
 	logs := make(chan types.Log, 512)
 	sub, err := client.SubscribeFilterLogs(idx.ctx, query, logs)
 	if err != nil {
@@ -1265,9 +1239,7 @@ func (idx *Indexer) subscribe() error {
 	}
 	defer sub.Unsubscribe()
 
-	// Drain the log channel in a separate goroutine. handleLog makes
-	// blocking RPC calls; running it off the receive loop prevents
-	// channel saturation under load.
+	// Drain the log channel in a separate goroutine.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1287,8 +1259,7 @@ func (idx *Indexer) subscribe() error {
 }
 
 // filterAddresses returns the registry, factory, and all known basket proxy
-// addresses to include in a FilterQuery. Called fresh on each subscribe()
-// invocation so newly indexed baskets are included on reconnection.
+// addresses to include in a FilterQuery.
 func (idx *Indexer) filterAddresses() []common.Address {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
@@ -1320,7 +1291,6 @@ func boolToInt(b bool) int {
 }
 
 // minDuration returns the smaller of two durations.
-// Named minDuration to avoid shadowing the Go 1.21 builtin min.
 func minDuration(a, b time.Duration) time.Duration {
 	if a < b {
 		return a

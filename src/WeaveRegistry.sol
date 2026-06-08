@@ -152,7 +152,7 @@ contract WeaveRegistry is IWeaveRegistry {
         maxSwapSlippageBps          = _maxSwapSlippageBps;
     }
 
-    // ── Asset catalogue ───────────────────────────────────────────────────────
+    // Asset catalogue
 
     function addAsset(AssetConfig calldata config) external override onlyGovernance {
         if (config.tokenAddress == address(0)) revert ZeroAddress();
@@ -243,7 +243,7 @@ contract WeaveRegistry is IWeaveRegistry {
         updatedAt = _updatedAt;
     }
 
-    // ── Basket registry ───────────────────────────────────────────────────────
+    // Basket registry
 
     function registerBasket(
         address basket,
@@ -295,7 +295,7 @@ contract WeaveRegistry is IWeaveRegistry {
         return _basketMeta[basket];
     }
 
-    // ── Protocol pause ────────────────────────────────────────────────────────
+    // Protocol pause
 
     /// @notice Immediately freezes all basket deposits and redemptions.
     /// Use in response to a critical oracle failure or active exploit.
@@ -311,7 +311,7 @@ contract WeaveRegistry is IWeaveRegistry {
         emit ProtocolUnpausedEvent(msg.sender);
     }
 
-    // ── Governance setters ────────────────────────────────────────────────────
+    // Governance setters
 
     function setSwapRouter(address router) external override onlyGovernance {
         if (router == address(0)) revert ZeroAddress();

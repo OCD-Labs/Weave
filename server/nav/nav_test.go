@@ -101,8 +101,6 @@ func TestPoll_ActiveBasket_AttemptsRPC(t *testing.T) {
 	database := openTestDB(t)
 	insertBasket(t, database, "0xbasket1", 0) // active
 
-	// RPC will fail — unreachable endpoint. The poll must not panic
-	// and must not write any nav_history row on RPC failure.
 	p := NewPoller("http://localhost:1", database, time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -141,7 +139,6 @@ func TestPoll_MultipleSuspendedAllExcluded(t *testing.T) {
 }
 
 func TestPollOne_WritesNavHistory_WhenRPCSucceeds(t *testing.T) {
-	// This test verifies the DB write path independently of the RPC.
 	database := openTestDB(t)
 	insertBasket(t, database, "0xbasket1", 0)
 

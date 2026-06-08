@@ -1,15 +1,5 @@
 package indexer
 
-// indexer_db_test.go — database-layer tests for the indexer.
-//
-// These tests exercise the stateful paths: writeChunkAtomic, handleBasketCreated,
-// handleAssetAdded, handleAssetDeactivated, handleBasketSuspended,
-// seedMissingConstituents, recordSeedFailure, syncBaskets suspended-state
-// propagation, filterAddresses, blockTimestamp cache, and Migrate idempotency.
-//
-// Every test opens a fresh in-memory SQLite database via db.OpenWithSchema so
-// there is no shared state between tests and no filesystem cleanup required.
-
 import (
 	"context"
 	"math/big"
@@ -25,8 +15,7 @@ import (
 )
 
 // testSchema is the minimal schema required by the indexer tests.
-// It mirrors schema.sql plus the migration columns so tests run against
-// exactly the same structure as production after Migrate() has been applied.
+// It mirrors schema.sql SQL scripts.
 const testSchema = `
 CREATE TABLE IF NOT EXISTS baskets (
     address               TEXT PRIMARY KEY,
@@ -158,7 +147,6 @@ func newTestDB(t *testing.T) *db.DB {
 }
 
 // newTestIndexer constructs an Indexer wired to the given database.
-// BASKET_FACTORY_ADDRESS must be set before calling this.
 func newTestIndexer(t *testing.T, d *db.DB) *Indexer {
 	t.Helper()
 	os.Setenv("BASKET_FACTORY_ADDRESS", "0xE9854c4734cd4A9dbC5086398A11df3c11f40b21")
@@ -191,7 +179,7 @@ func insertAsset(t *testing.T, d *db.DB, address, symbol string) {
 	}
 }
 
-// ── writeChunkAtomic tests ────────────────────────────────────────────────────
+// writeChunkAtomic tests
 
 // TestWriteChunkAtomic_DepositWrittenAndCursorAdvanced verifies that a
 // Deposited event in a chunk is written to the deposits table and the cursor
@@ -200,7 +188,6 @@ func TestWriteChunkAtomic_DepositWrittenAndCursorAdvanced(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
 
-	// Seed cursor at deploy block.
 	if _, err := d.Exec(`INSERT INTO sync_cursors (key, block_num) VALUES ('events', 68391146)`); err != nil {
 		t.Fatalf("seed cursor: %v", err)
 	}
@@ -262,8 +249,7 @@ func TestWriteChunkAtomic_DepositWrittenAndCursorAdvanced(t *testing.T) {
 
 // TestWriteChunkAtomic_IdempotentOnReplay verifies that replaying the same
 // chunk twice (simulating a crash-restart) produces exactly one deposit row,
-// not two. The UNIQUE(tx_hash, log_index) constraint and ON CONFLICT DO NOTHING
-// make this idempotent.
+// not two.
 func TestWriteChunkAtomic_IdempotentOnReplay(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -317,14 +303,7 @@ func TestWriteChunkAtomic_IdempotentOnReplay(t *testing.T) {
 }
 
 // TestWriteChunkAtomic_CursorNotAdvancedOnWriteError verifies that if a log
-// write fails, the cursor stays at its original value. We simulate a write
-// error by passing a log whose basket address does not exist in the database
-// and whose ABI data is valid — the write itself will succeed (no FK constraint
-// in SQLite without PRAGMA foreign_keys=ON enforced per-connection here),
-// so instead we test the cursor rollback directly by closing the DB mid-write.
-//
-// A lighter-weight version: verify that an empty chunk advances the cursor
-// correctly, and that the cursor is transactional by reading it before and after.
+// write fails, the cursor stays at its original value.
 func TestWriteChunkAtomic_EmptyChunkAdvancesCursor(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -416,7 +395,7 @@ func TestWriteChunkAtomic_MultipleEventTypes(t *testing.T) {
 	}
 }
 
-// ── handleBasketCreated database tests ───────────────────────────────────────
+// handleBasketCreated database tests
 
 // TestHandleBasketCreated_WritesBasketAndConstituents verifies that
 // handleBasketCreated writes the basket row and all constituent rows atomically.
@@ -504,8 +483,7 @@ func TestHandleBasketCreated_WritesBasketAndConstituents(t *testing.T) {
 }
 
 // TestHandleBasketCreated_Idempotent verifies that calling handleBasketCreated
-// twice for the same basket does not duplicate rows — the ON CONFLICT DO UPDATE
-// upsert handles the second call gracefully.
+// twice for the same basket does not duplicate rows.
 func TestHandleBasketCreated_Idempotent(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -567,7 +545,7 @@ func TestHandleBasketCreated_InsufficientTopics(t *testing.T) {
 	}
 }
 
-// ── handleAssetAdded / handleAssetDeactivated tests ──────────────────────────
+// handleAssetAdded / handleAssetDeactivated tests
 
 func TestHandleAssetAdded_WritesAssetRow(t *testing.T) {
 	d := newTestDB(t)
@@ -628,7 +606,7 @@ func TestHandleAssetDeactivated_SetsInactive(t *testing.T) {
 	}
 }
 
-// ── handleBasketSuspended tests ───────────────────────────────────────────────
+// handleBasketSuspended tests
 
 func TestHandleBasketSuspended_SetsSuspendedFlag(t *testing.T) {
 	d := newTestDB(t)
@@ -657,15 +635,10 @@ func TestHandleBasketSuspended_SetsSuspendedFlag(t *testing.T) {
 	}
 }
 
-// ── syncBaskets suspended-state propagation test ─────────────────────────────
+// syncBaskets suspended-state propagation test
 
 // TestSyncBaskets_SuspendedBasketWrittenCorrectly verifies that a basket whose
-// active=false field in getAllBaskets is written with suspended=1. This exercises
-// the fix for the original bug where all baskets were written with suspended=0.
-//
-// We cannot call syncBaskets directly without a live RPC node, so we test the
-// underlying database logic by simulating what syncBaskets writes and then
-// verifying the ON CONFLICT DO UPDATE correctly updates the suspended field.
+// active=false field in getAllBaskets is written with suspended=1.
 func TestSyncBaskets_SuspendedStateUpdate(t *testing.T) {
 	d := newTestDB(t)
 
@@ -702,7 +675,7 @@ func TestSyncBaskets_SuspendedStateUpdate(t *testing.T) {
 	}
 }
 
-// ── recordSeedFailure and seedMissingConstituents tests ──────────────────────
+// recordSeedFailure and seedMissingConstituents tests
 
 func TestRecordSeedFailure_IncrementsOnEachCall(t *testing.T) {
 	d := newTestDB(t)
@@ -739,10 +712,7 @@ func TestRecordSeedFailure_UpdatesLastAttempt(t *testing.T) {
 
 // TestSeedMissingConstituents_SkipsBasketExceedingMaxAttempts verifies that a
 // basket with attempts >= seedMaxAttempts is excluded from the seeding query
-// and seedOneBasket is never called for it. We verify this by inserting a
-// basket with no constituents and a failure count at the limit, then running
-// seedMissingConstituents and confirming the basket still has no constituents
-// (i.e. it was skipped, not attempted and failed).
+// and seedOneBasket is never called for it.
 func TestSeedMissingConstituents_SkipsBasketAtMaxAttempts(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -762,7 +732,7 @@ func TestSeedMissingConstituents_SkipsBasketAtMaxAttempts(t *testing.T) {
 		t.Fatalf("seed failures: %v", err)
 	}
 
-	// seedMissingConstituents with no RPC client — if it tries to seed the
+	// seedMissingConstituents with no RPC client, if it tries to seed the
 	// basket it will call newHTTPClient which will fail to dial and log an error
 	// but not panic. The basket should be skipped entirely (zero constituent rows).
 	idx.seedMissingConstituents()
@@ -798,14 +768,10 @@ func TestSeedMissingConstituents_NoOp_WhenAllSeeded(t *testing.T) {
 		t.Fatalf("seed constituent: %v", err)
 	}
 
-	// Must complete without error and without attempting any RPC call.
-	// blockTimestamp now guards nil clients and returns 0, so even if the RPC
-	// path were reached it would not panic. Successful completion proves the
-	// no-op path was taken because no RPC dial is attempted at all.
 	idx.seedMissingConstituents()
 }
 
-// ── filterAddresses tests ─────────────────────────────────────────────────────
+// filterAddresses tests
 
 func TestFilterAddresses_AlwaysContainsRegistryAndFactory(t *testing.T) {
 	d := newTestDB(t)
@@ -855,7 +821,7 @@ func TestFilterAddresses_IncludesNewlyIndexedBasket(t *testing.T) {
 	}
 }
 
-// ── Migrate idempotency tests ─────────────────────────────────────────────────
+// Migrate idempotency tests
 
 func TestMigrate_Idempotent(t *testing.T) {
 	d := newTestDB(t)
@@ -904,7 +870,7 @@ func TestMigrate_DeduplicationConstraintEnforced(t *testing.T) {
 		t.Fatalf("first insert: %v", err)
 	}
 
-	// Insert the same (tx_hash, log_index) with ON CONFLICT DO NOTHING — must not error.
+	// Insert the same (tx_hash, log_index) with ON CONFLICT DO NOTHING.
 	_, err = d.Exec(`
 		INSERT INTO deposits
 			(basket_address, investor_address, usdg_amount, basket_tokens_minted, fee_usdg, timestamp, tx_hash, log_index)
@@ -914,7 +880,7 @@ func TestMigrate_DeduplicationConstraintEnforced(t *testing.T) {
 		t.Fatalf("duplicate insert with ON CONFLICT DO NOTHING: %v", err)
 	}
 
-	// Insert the same (tx_hash, log_index) without ON CONFLICT — must error with unique constraint.
+	// Insert the same (tx_hash, log_index) without ON CONFLICT.
 	_, err = d.Exec(`
 		INSERT INTO deposits
 			(basket_address, investor_address, usdg_amount, basket_tokens_minted, fee_usdg, timestamp, tx_hash, log_index)
@@ -937,7 +903,6 @@ func TestMigrate_BasketSeedFailuresTableExists(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 
-	// INSERT into basket_seed_failures — proves the table exists.
 	_, err := d.Exec(`
 		INSERT INTO basket_seed_failures (basket_address, attempts, last_attempt)
 		VALUES ('0xbasket', 1, 1700000000)`)
@@ -946,11 +911,10 @@ func TestMigrate_BasketSeedFailuresTableExists(t *testing.T) {
 	}
 }
 
-// ── blockTimestamp cache correctness ─────────────────────────────────────────
+// blockTimestamp cache correctness
 
 // TestBlockTimestamp_CacheHit_NoPanic verifies that a pre-warmed cache entry
-// is returned without reaching the RPC path. Passing a nil client confirms
-// the cache hit path is taken — a cache miss with nil client returns 0 cleanly.
+// is returned without reaching the RPC path. 
 func TestBlockTimestamp_CacheHit_NoPanic(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -1004,7 +968,7 @@ func TestBlockTimestamp_CacheEviction_BoundsMapSize(t *testing.T) {
 	}
 }
 
-// ── FeeSnapshot write test ────────────────────────────────────────────────────
+// FeeSnapshot write test
 
 func TestWriteFeeSnapshot_WritesCorrectSnapshotID(t *testing.T) {
 	d := newTestDB(t)
