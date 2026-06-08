@@ -15,8 +15,7 @@ import (
 )
 
 // latestRoundDataABI is the ABI fragment for IWeaveOracle.latestRoundData(),
-// matching Chainlink AggregatorV3Interface exactly. On mainnet, any Chainlink
-// aggregator address can be used directly without an adapter contract.
+// matching Chainlink AggregatorV3Interface exactly.
 var latestRoundDataABI, _ = abi.JSON(strings.NewReader(`[{
 	"inputs": [],
 	"name": "latestRoundData",
@@ -32,8 +31,6 @@ var latestRoundDataABI, _ = abi.JSON(strings.NewReader(`[{
 }]`))
 
 // Poller reads oracle prices at a fixed interval and writes to price_history.
-// It only polls assets that are constituents of at least one active (non-suspended)
-// basket — idle catalogue assets generate no polling traffic.
 type Poller struct {
 	rpcURL       string
 	registryAddr common.Address
@@ -128,7 +125,7 @@ func (p *Poller) poll(ctx context.Context) {
 func (p *Poller) readOraclePrice(ctx context.Context, client *ethclient.Client, oracle common.Address) *big.Int {
 	caller := bind.NewBoundContract(oracle, latestRoundDataABI, client, nil, nil)
 
-	var results []interface{}
+	var results []any
 	err := caller.Call(&bind.CallOpts{Context: ctx}, &results, "latestRoundData")
 	if err != nil {
 		log.Printf("prices: latestRoundData(%s): %v", oracle.Hex(), err)

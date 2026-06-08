@@ -13,7 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-// ── Topic hash tests ──────────────────────────────────────────────────────────
+// Topic hash tests
 
 func TestEventTopicHash_AssetAdded(t *testing.T) {
 	hash := topicAssetAdded.Hex()
@@ -70,7 +70,7 @@ func TestEventTopic_DeterministicHash(t *testing.T) {
 	}
 }
 
-// ── abi.NewType tests (replaces mustABIType which no longer exists) ───────────
+// abi.NewType tests
 
 func TestABINewType_ValidTypes(t *testing.T) {
 	validTypes := []string{"string", "address", "uint256", "bool", "bytes32"}
@@ -89,7 +89,7 @@ func TestABINewType_InvalidType_ReturnsError(t *testing.T) {
 	}
 }
 
-// ── AssetAdded log tests ──────────────────────────────────────────────────────
+// AssetAdded log tests
 
 func buildAssetAddedLog(token, oracle common.Address, symbol, name, sector string) types.Log {
 	data, _ := assetAddedABI.Pack(symbol, name, sector, oracle)
@@ -187,7 +187,7 @@ func TestDecodeAssetAddedLog_MalformedData(t *testing.T) {
 	}
 }
 
-// ── BasketCreated log tests ───────────────────────────────────────────────────
+// BasketCreated log tests
 
 func buildBasketCreatedLog(
 	basket, creatorToken, creator common.Address,
@@ -329,11 +329,10 @@ func TestDecodeBasketCreatedLog_MalformedData(t *testing.T) {
 	}
 }
 
-// ── Deposited log tests ───────────────────────────────────────────────────────
+// Deposited log tests
 
 // buildDepositedLog constructs a Deposited log using the ABI packer —
-// matching exactly what the chain emits. The old approach used raw byte
-// slicing which does not match ABI encoding for non-value types.
+// matching exactly what the chain emits.
 func buildDepositedLog(investor common.Address, usdgAmount, tokensMinted, feeUsdg *big.Int) types.Log {
 	data, _ := depositedABI.Pack(usdgAmount, tokensMinted, feeUsdg)
 
@@ -423,7 +422,7 @@ func TestDecodeDepositedLog_InsufficientTopics(t *testing.T) {
 	}
 }
 
-// ── Redeemed log tests ────────────────────────────────────────────────────────
+// Redeemed log tests
 
 func buildRedeemedLog(investor common.Address, tokensBurned, usdgReturned, feeUsdg *big.Int) types.Log {
 	data, _ := redeemedABI.Pack(tokensBurned, usdgReturned, feeUsdg)
@@ -492,7 +491,7 @@ func TestDecodeRedeemedLog_Amounts(t *testing.T) {
 	}
 }
 
-// ── FeeSnapshot log tests ─────────────────────────────────────────────────────
+// FeeSnapshot log tests
 
 func buildFeeSnapshotLog(basketAddr common.Address, snapshotID int64, usdgAmount *big.Int) types.Log {
 	totalSupply := new(big.Int).Mul(big.NewInt(1_000_000), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
@@ -562,7 +561,7 @@ func TestDecodeFeeSnapshotLog(t *testing.T) {
 	}
 }
 
-// ── Helper function tests ─────────────────────────────────────────────────────
+// Helper function tests
 
 func TestBoolToInt(t *testing.T) {
 	if boolToInt(true) != 1 {
@@ -608,7 +607,7 @@ func TestGetEnv_TrimsWhitespace(t *testing.T) {
 	}
 }
 
-// ── Indexer construction tests ────────────────────────────────────────────────
+// Indexer construction tests
 
 func TestNew_MissingFactoryAddress_ReturnsError(t *testing.T) {
 	os.Unsetenv("BASKET_FACTORY_ADDRESS")
@@ -640,7 +639,7 @@ func TestNew_WithFactoryAddress_Succeeds(t *testing.T) {
 	}
 }
 
-// ── blockTs cache tests ───────────────────────────────────────────────────────
+// blockTs cache tests
 
 func TestBlockTsCache_Eviction(t *testing.T) {
 	os.Setenv("BASKET_FACTORY_ADDRESS", "0xE9854c4734cd4A9dbC5086398A11df3c11f40b21")
@@ -713,7 +712,7 @@ func TestBlockTsCache_HitReturnsCachedValue(t *testing.T) {
 	}
 }
 
-// ── Fuzz tests ────────────────────────────────────────────────────────────────
+// Fuzz tests
 
 func FuzzDecodeAssetAddedData(f *testing.F) {
 	oracle := common.HexToAddress("0x26daf42381ced15760c5f47a5072a228370b100b")

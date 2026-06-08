@@ -100,7 +100,6 @@ func (p *Poller) poll(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Each worker gets its own RPC connection to avoid contention.
 			client, err := ethclient.DialContext(ctx, p.rpcURL)
 			if err != nil {
 				log.Printf("nav: worker dial error: %v", err)

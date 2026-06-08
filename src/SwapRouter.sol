@@ -46,7 +46,7 @@ contract SwapRouter is IWeaveRouter {
         spreadBps = 30; // 0.3% default — matches Uniswap v3 standard tier
     }
 
-    // ── Swap functions ────────────────────────────────────────────────────────
+    // Swap functions
 
     function swapExactUSDGForToken(
         address token,
@@ -111,7 +111,7 @@ contract SwapRouter is IWeaveRouter {
         IERC20(tokenOut).safeTransfer(recipient, amountOut);
     }
 
-    // ── Quote functions ───────────────────────────────────────────────────────
+    // Quote functions
 
     /// @notice usdgIn (6 dec) → tokenOut (18 dec) at oracle price minus spread.
     /// spread simulates the DEX fee taken from the output side of the swap.
@@ -142,7 +142,7 @@ contract SwapRouter is IWeaveRouter {
         usdgOut = Math.mulDiv(raw, 10_000 - spreadBps, 10_000);
     }
 
-    // ── Treasury management ───────────────────────────────────────────────────
+    // Treasury management
 
     /// @notice Fund the router treasury with a token.
     /// Call after deployment for each stock token and USDG.
