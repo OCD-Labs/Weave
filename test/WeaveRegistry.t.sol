@@ -19,23 +19,22 @@ contract WeaveRegistryTest is Test {
     address notGov     = makeAddr("notGov");
 
     function setUp() public {
-        vm.prank(governance);
         registry = new WeaveRegistry(
             governance,
             usdg,
             treasury,
-            50,          // managementFeeBps: 0.5%
-            2_000,       // protocolShareBps: 20%
-            100_000_000, // minAUMForAutomation
-            86_400,      // oracleStalenessSecs
-            10_000_000,  // minFirstDepositUsdg
-            20,          // maxConstituents
-            100,         // minWeightBps
-            1_000_000,   // minRebalanceTradeSizeUsdg: $1
-            100          // maxSwapSlippageBps: 1%
+            50,
+            2_000,
+            100_000_000,
+            86_400,
+            10_000_000,
+            20,
+            100,
+            1_000_000,
+            100
         );
-
-        oracle = new OracleAdapter("TEST / USD", 100_00000000); // $100
+    
+        oracle = new OracleAdapter("TEST / USD", 100_00000000);
     }
 
     function test_constructorSetsParams() public view {
