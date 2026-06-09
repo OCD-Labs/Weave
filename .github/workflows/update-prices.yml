@@ -1,4 +1,4 @@
-name: update-prices
+name: Simulate market prices
 
 on:
   schedule:
@@ -13,12 +13,14 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
 
       - name: Run price update (first pass)
         env:
           PRIVATE_KEY: ${{ secrets.PRICE_UPDATER_PRIVATE_KEY }}
           RPC_URL: https://rpc.testnet.chain.robinhood.com
-        run: bash scripts/update-prices.sh
+        run: bash script/update-prices.sh
 
       - name: Wait 2.5 minutes
         run: sleep 150
@@ -27,4 +29,4 @@ jobs:
         env:
           PRIVATE_KEY: ${{ secrets.PRICE_UPDATER_PRIVATE_KEY }}
           RPC_URL: https://rpc.testnet.chain.robinhood.com
-        run: bash scripts/update-prices.sh
+        run: bash script/update-prices.sh
