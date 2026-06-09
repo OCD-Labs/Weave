@@ -1,0 +1,30 @@
+name: update-prices
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Run price update (first pass)
+        env:
+          PRIVATE_KEY: ${{ secrets.PRICE_UPDATER_PRIVATE_KEY }}
+          RPC_URL: https://rpc.testnet.chain.robinhood.com
+        run: bash scripts/update-prices.sh
+
+      - name: Wait 2.5 minutes
+        run: sleep 150
+
+      - name: Run price update (second pass)
+        env:
+          PRIVATE_KEY: ${{ secrets.PRICE_UPDATER_PRIVATE_KEY }}
+          RPC_URL: https://rpc.testnet.chain.robinhood.com
+        run: bash scripts/update-prices.sh
