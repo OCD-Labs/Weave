@@ -88,7 +88,7 @@ contract BasketFactory is IBasketFactory {
 
         if (rebalancingEnabled) {
             // Zero threshold means every tick triggers rebalancing — operationally impossible.
-            // Above 5000 bps (50%) is nonsensical — a basket is already destroyed at that drift.
+            // Above 5000 bps (50%) is nonsensical, a basket is already destroyed at that drift.
             if (driftThresholdBps == 0 || driftThresholdBps > 5_000) {
                 revert InvalidDriftThreshold();
             }
@@ -110,7 +110,6 @@ contract BasketFactory is IBasketFactory {
             ctSymbol
         ));
 
-        // Initialize the basket proxy with all configuration.
         BasketImplementation(basket).initialize(
             registry,
             creatorToken,

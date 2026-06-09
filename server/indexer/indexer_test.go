@@ -3,12 +3,17 @@ package indexer
 import (
 	"encoding/hex"
 	"math/big"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
+
+// Topic hash tests
 
 func TestEventTopicHash_AssetAdded(t *testing.T) {
 	hash := topicAssetAdded.Hex()
@@ -52,6 +57,40 @@ func TestEventTopicHash_AllDistinct(t *testing.T) {
 	}
 }
 
+func TestEventTopic_DeterministicHash(t *testing.T) {
+	h1 := eventTopic("Deposited(address,uint256,uint256,uint256)")
+	h2 := eventTopic("Deposited(address,uint256,uint256,uint256)")
+	if h1 != h2 {
+		t.Error("eventTopic is not deterministic")
+	}
+
+	h3 := eventTopic("Deposited(address,uint256,uint256)")
+	if h1 == h3 {
+		t.Error("different signatures should produce different hashes")
+	}
+}
+
+// abi.NewType tests
+
+func TestABINewType_ValidTypes(t *testing.T) {
+	validTypes := []string{"string", "address", "uint256", "bool", "bytes32"}
+	for _, typ := range validTypes {
+		_, err := abi.NewType(typ, "", nil)
+		if err != nil {
+			t.Errorf("abi.NewType(%q) failed unexpectedly: %v", typ, err)
+		}
+	}
+}
+
+func TestABINewType_InvalidType_ReturnsError(t *testing.T) {
+	_, err := abi.NewType("notavalidtype", "", nil)
+	if err == nil {
+		t.Error("abi.NewType with invalid type should return an error")
+	}
+}
+
+// AssetAdded log tests
+
 func buildAssetAddedLog(token, oracle common.Address, symbol, name, sector string) types.Log {
 	data, _ := assetAddedABI.Pack(symbol, name, sector, oracle)
 
@@ -77,7 +116,6 @@ func TestDecodeAssetAddedLog_AllFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to decode AssetAdded log data: %v", err)
 	}
-
 	if len(decoded) < 4 {
 		t.Fatalf("expected 4 decoded fields, got %d", len(decoded))
 	}
@@ -149,6 +187,8 @@ func TestDecodeAssetAddedLog_MalformedData(t *testing.T) {
 	}
 }
 
+// BasketCreated log tests
+
 func buildBasketCreatedLog(
 	basket, creatorToken, creator common.Address,
 	name, symbol, thesis string,
@@ -177,9 +217,9 @@ func TestDecodeBasketCreatedLog_AllFields(t *testing.T) {
 	creator      := common.HexToAddress("0x4e4b989abe79381c1b8a4871d6af481b175f4865")
 
 	constituents := []common.Address{
-		common.HexToAddress("0xc9f9c86933092bbbfff3ccb4b105a4a94bf3bd4e"), // TSLA
-		common.HexToAddress("0x5884ad2f920c162cfbbacc88c9c51aa75ec09e02"), // AMZN
-		common.HexToAddress("0x71178bac73cbeb415514eb542a8995b82669778d"), // AMD
+		common.HexToAddress("0xc9f9c86933092bbbfff3ccb4b105a4a94bf3bd4e"),
+		common.HexToAddress("0x5884ad2f920c162cfbbacc88c9c51aa75ec09e02"),
+		common.HexToAddress("0x71178bac73cbeb415514eb542a8995b82669778d"),
 	}
 	weights := []*big.Int{
 		big.NewInt(5000),
@@ -220,12 +260,12 @@ func TestDecodeBasketCreatedLog_AllFields(t *testing.T) {
 		t.Fatalf("expected 6 decoded fields, got %d", len(decoded))
 	}
 
-	gotName,   _ := decoded[0].(string)
-	gotSymbol, _ := decoded[1].(string)
-	gotThesis, _ := decoded[2].(string)
-	gotConsts, _ := decoded[3].([]common.Address)
-	gotWeights,_ := decoded[4].([]*big.Int)
-	gotRebal,  _ := decoded[5].(bool)
+	gotName,    _ := decoded[0].(string)
+	gotSymbol,  _ := decoded[1].(string)
+	gotThesis,  _ := decoded[2].(string)
+	gotConsts,  _ := decoded[3].([]common.Address)
+	gotWeights, _ := decoded[4].([]*big.Int)
+	gotRebal,   _ := decoded[5].(bool)
 
 	if gotName != "AI Infrastructure" {
 		t.Errorf("name: expected AI Infrastructure, got %q", gotName)
@@ -289,11 +329,12 @@ func TestDecodeBasketCreatedLog_MalformedData(t *testing.T) {
 	}
 }
 
+// Deposited log tests
+
+// buildDepositedLog constructs a Deposited log using the ABI packer —
+// matching exactly what the chain emits.
 func buildDepositedLog(investor common.Address, usdgAmount, tokensMinted, feeUsdg *big.Int) types.Log {
-	data := make([]byte, 96)
-	copy(data[0:32], common.LeftPadBytes(usdgAmount.Bytes(), 32))
-	copy(data[32:64], common.LeftPadBytes(tokensMinted.Bytes(), 32))
-	copy(data[64:96], common.LeftPadBytes(feeUsdg.Bytes(), 32))
+	data, _ := depositedABI.Pack(usdgAmount, tokensMinted, feeUsdg)
 
 	return types.Log{
 		Topics: []common.Hash{
@@ -307,42 +348,55 @@ func buildDepositedLog(investor common.Address, usdgAmount, tokensMinted, feeUsd
 	}
 }
 
-func TestDecodeDepositedLog_Amounts(t *testing.T) {
+func TestDecodeDepositedLog_ViaABI(t *testing.T) {
 	investor     := common.HexToAddress("0x4e4B989abE79381C1B8a4871d6aF481B175F4865")
-	usdgAmount   := big.NewInt(10_000_000) // 10 USDG (6 decimals)
-	tokensMinted := new(big.Int).Mul(big.NewInt(995), new(big.Int).Exp(big.NewInt(10), big.NewInt(16), nil)) // 9.95 tokens
-	feeUsdg      := big.NewInt(50_000) // 0.05 USDG fee
+	usdgAmount   := big.NewInt(10_000_000)
+	tokensMinted, _ := new(big.Int).SetString("9950000000000000000", 10)
+	feeUsdg      := big.NewInt(50_000)
 
 	vLog := buildDepositedLog(investor, usdgAmount, tokensMinted, feeUsdg)
 
-	if len(vLog.Data) < 96 {
-		t.Fatalf("expected 96 bytes of data, got %d", len(vLog.Data))
+	decoded, err := depositedABI.Unpack(vLog.Data)
+	if err != nil || len(decoded) < 3 {
+		t.Fatalf("depositedABI.Unpack failed: %v", err)
 	}
 
-	gotUsdg   := new(big.Int).SetBytes(vLog.Data[0:32])
-	gotTokens := new(big.Int).SetBytes(vLog.Data[32:64])
-	gotFee    := new(big.Int).SetBytes(vLog.Data[64:96])
+	gotUsdg   := decoded[0].(*big.Int)
+	gotTokens := decoded[1].(*big.Int)
+	gotFee    := decoded[2].(*big.Int)
 
 	if gotUsdg.Cmp(usdgAmount) != 0 {
-		t.Errorf("usdg: expected %s, got %s", usdgAmount, gotUsdg)
+		t.Errorf("usdgAmount: expected %s, got %s", usdgAmount, gotUsdg)
 	}
 	if gotTokens.Cmp(tokensMinted) != 0 {
-		t.Errorf("tokens minted: expected %s, got %s", tokensMinted, gotTokens)
+		t.Errorf("tokensMinted: expected %s, got %s", tokensMinted, gotTokens)
 	}
 	if gotFee.Cmp(feeUsdg) != 0 {
-		t.Errorf("fee: expected %s, got %s", feeUsdg, gotFee)
+		t.Errorf("feeUsdg: expected %s, got %s", feeUsdg, gotFee)
 	}
 }
 
-func TestDecodeDepositedLog_InsufficientData(t *testing.T) {
-	vLog := types.Log{
-		Topics:  []common.Hash{topicDeposited, {}},
-		Data:    make([]byte, 32),
-		TxHash:  common.HexToHash("0x1"),
-		Address: common.HexToAddress("0x2"),
+func TestDecodeDepositedLog_Amounts(t *testing.T) {
+	investor     := common.HexToAddress("0x4e4B989abE79381C1B8a4871d6aF481B175F4865")
+	usdgAmount   := big.NewInt(10_000_000)
+	tokensMinted := new(big.Int).Mul(big.NewInt(995), new(big.Int).Exp(big.NewInt(10), big.NewInt(16), nil))
+	feeUsdg      := big.NewInt(50_000)
+
+	vLog := buildDepositedLog(investor, usdgAmount, tokensMinted, feeUsdg)
+
+	decoded, err := depositedABI.Unpack(vLog.Data)
+	if err != nil || len(decoded) < 3 {
+		t.Fatalf("depositedABI.Unpack failed: %v", err)
 	}
-	if len(vLog.Data) >= 96 {
-		t.Error("test setup error: expected fewer than 96 bytes")
+
+	if decoded[0].(*big.Int).Cmp(usdgAmount) != 0 {
+		t.Errorf("usdg: expected %s, got %s", usdgAmount, decoded[0])
+	}
+	if decoded[1].(*big.Int).Cmp(tokensMinted) != 0 {
+		t.Errorf("tokens minted: expected %s, got %s", tokensMinted, decoded[1])
+	}
+	if decoded[2].(*big.Int).Cmp(feeUsdg) != 0 {
+		t.Errorf("fee: expected %s, got %s", feeUsdg, decoded[2])
 	}
 }
 
@@ -356,11 +410,22 @@ func TestDecodeDepositedLog_InvestorAddress(t *testing.T) {
 	}
 }
 
+func TestDecodeDepositedLog_InsufficientTopics(t *testing.T) {
+	vLog := types.Log{
+		Topics:  []common.Hash{topicDeposited},
+		Data:    []byte{},
+		TxHash:  common.HexToHash("0x1"),
+		Address: common.HexToAddress("0x2"),
+	}
+	if len(vLog.Topics) >= 2 {
+		t.Error("test setup error: expected fewer than 2 topics")
+	}
+}
+
+// Redeemed log tests
+
 func buildRedeemedLog(investor common.Address, tokensBurned, usdgReturned, feeUsdg *big.Int) types.Log {
-	data := make([]byte, 96)
-	copy(data[0:32], common.LeftPadBytes(tokensBurned.Bytes(), 32))
-	copy(data[32:64], common.LeftPadBytes(usdgReturned.Bytes(), 32))
-	copy(data[64:96], common.LeftPadBytes(feeUsdg.Bytes(), 32))
+	data, _ := redeemedABI.Pack(tokensBurned, usdgReturned, feeUsdg)
 
 	return types.Log{
 		Topics: []common.Hash{
@@ -374,32 +439,63 @@ func buildRedeemedLog(investor common.Address, tokensBurned, usdgReturned, feeUs
 	}
 }
 
-func TestDecodeRedeemedLog_Amounts(t *testing.T) {
+func TestDecodeRedeemedLog_ViaABI(t *testing.T) {
 	investor     := common.HexToAddress("0x4e4B989abE79381C1B8a4871d6aF481B175F4865")
-	tokensBurned := new(big.Int).Mul(big.NewInt(5), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
-	usdgReturned := big.NewInt(4_975_000) // ~4.975 USDG after fee
-	feeUsdg      := big.NewInt(25_000)    // 0.025 USDG fee
+	tokensBurned, _ := new(big.Int).SetString("5000000000000000000", 10)
+	usdgReturned := big.NewInt(4_975_000)
+	feeUsdg      := big.NewInt(25_000)
 
 	vLog := buildRedeemedLog(investor, tokensBurned, usdgReturned, feeUsdg)
 
-	gotBurned   := new(big.Int).SetBytes(vLog.Data[0:32])
-	gotReturned := new(big.Int).SetBytes(vLog.Data[32:64])
-	gotFee      := new(big.Int).SetBytes(vLog.Data[64:96])
+	decoded, err := redeemedABI.Unpack(vLog.Data)
+	if err != nil || len(decoded) < 3 {
+		t.Fatalf("redeemedABI.Unpack failed: %v", err)
+	}
+
+	gotBurned   := decoded[0].(*big.Int)
+	gotReturned := decoded[1].(*big.Int)
+	gotFee      := decoded[2].(*big.Int)
 
 	if gotBurned.Cmp(tokensBurned) != 0 {
-		t.Errorf("tokens burned: expected %s, got %s", tokensBurned, gotBurned)
+		t.Errorf("tokensBurned: expected %s, got %s", tokensBurned, gotBurned)
 	}
 	if gotReturned.Cmp(usdgReturned) != 0 {
-		t.Errorf("usdg returned: expected %s, got %s", usdgReturned, gotReturned)
+		t.Errorf("usdgReturned: expected %s, got %s", usdgReturned, gotReturned)
 	}
 	if gotFee.Cmp(feeUsdg) != 0 {
-		t.Errorf("fee: expected %s, got %s", feeUsdg, gotFee)
+		t.Errorf("feeUsdg: expected %s, got %s", feeUsdg, gotFee)
 	}
 }
 
+func TestDecodeRedeemedLog_Amounts(t *testing.T) {
+	investor     := common.HexToAddress("0x4e4B989abE79381C1B8a4871d6aF481B175F4865")
+	tokensBurned := new(big.Int).Mul(big.NewInt(5), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
+	usdgReturned := big.NewInt(4_975_000)
+	feeUsdg      := big.NewInt(25_000)
+
+	vLog := buildRedeemedLog(investor, tokensBurned, usdgReturned, feeUsdg)
+
+	decoded, err := redeemedABI.Unpack(vLog.Data)
+	if err != nil || len(decoded) < 3 {
+		t.Fatalf("redeemedABI.Unpack failed: %v", err)
+	}
+
+	if decoded[0].(*big.Int).Cmp(tokensBurned) != 0 {
+		t.Errorf("tokens burned: expected %s, got %s", tokensBurned, decoded[0])
+	}
+	if decoded[1].(*big.Int).Cmp(usdgReturned) != 0 {
+		t.Errorf("usdg returned: expected %s, got %s", usdgReturned, decoded[1])
+	}
+	if decoded[2].(*big.Int).Cmp(feeUsdg) != 0 {
+		t.Errorf("fee: expected %s, got %s", feeUsdg, decoded[2])
+	}
+}
+
+// FeeSnapshot log tests
+
 func buildFeeSnapshotLog(basketAddr common.Address, snapshotID int64, usdgAmount *big.Int) types.Log {
-	data := make([]byte, 32)
-	copy(data[0:32], common.LeftPadBytes(usdgAmount.Bytes(), 32))
+	totalSupply := new(big.Int).Mul(big.NewInt(1_000_000), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
+	data, _ := feeSnapshotABI.Pack(usdgAmount, totalSupply)
 
 	snapIDHash := common.BigToHash(big.NewInt(snapshotID))
 
@@ -415,10 +511,33 @@ func buildFeeSnapshotLog(basketAddr common.Address, snapshotID int64, usdgAmount
 	}
 }
 
+func TestDecodeFeeSnapshotLog_ViaABI(t *testing.T) {
+	basket     := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
+	snapshotID := int64(3)
+	usdgAmount := big.NewInt(40_000)
+
+	vLog := buildFeeSnapshotLog(basket, snapshotID, usdgAmount)
+
+	gotSnapshotID := new(big.Int).SetBytes(vLog.Topics[1].Bytes()).Int64()
+	if gotSnapshotID != snapshotID {
+		t.Errorf("snapshotID: expected %d, got %d", snapshotID, gotSnapshotID)
+	}
+
+	decoded, err := feeSnapshotABI.Unpack(vLog.Data)
+	if err != nil || len(decoded) < 1 {
+		t.Fatalf("feeSnapshotABI.Unpack failed: %v", err)
+	}
+
+	gotAmount := decoded[0].(*big.Int)
+	if gotAmount.Cmp(usdgAmount) != 0 {
+		t.Errorf("usdgAmount: expected %s, got %s", usdgAmount, gotAmount)
+	}
+}
+
 func TestDecodeFeeSnapshotLog(t *testing.T) {
 	basket     := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
 	snapshotID := int64(1)
-	usdgAmount := big.NewInt(40_000) // 0.04 USDG creator cut
+	usdgAmount := big.NewInt(40_000)
 
 	vLog := buildFeeSnapshotLog(basket, snapshotID, usdgAmount)
 
@@ -431,15 +550,18 @@ func TestDecodeFeeSnapshotLog(t *testing.T) {
 		t.Errorf("snapshotID: expected %d, got %d", snapshotID, gotSnapshotID)
 	}
 
-	if len(vLog.Data) < 32 {
-		t.Fatal("expected at least 32 bytes of data")
+	decoded, err := feeSnapshotABI.Unpack(vLog.Data)
+	if err != nil || len(decoded) < 1 {
+		t.Fatalf("feeSnapshotABI.Unpack failed: %v", err)
 	}
 
-	gotAmount := new(big.Int).SetBytes(vLog.Data[0:32])
+	gotAmount := decoded[0].(*big.Int)
 	if gotAmount.Cmp(usdgAmount) != 0 {
 		t.Errorf("usdgAmount: expected %s, got %s", usdgAmount, gotAmount)
 	}
 }
+
+// Helper function tests
 
 func TestBoolToInt(t *testing.T) {
 	if boolToInt(true) != 1 {
@@ -450,48 +572,149 @@ func TestBoolToInt(t *testing.T) {
 	}
 }
 
-func TestMustABIType_ValidTypes(t *testing.T) {
-	validTypes := []string{"string", "address", "uint256", "bool", "bytes32"}
-	for _, typ := range validTypes {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("mustABIType(%q) panicked unexpectedly: %v", typ, r)
-				}
-			}()
-			mustABIType(typ)
-		}()
+func TestMinDuration(t *testing.T) {
+	if minDuration(1*time.Second, 2*time.Second) != 1*time.Second {
+		t.Error("minDuration should return the smaller value")
+	}
+	if minDuration(5*time.Minute, 1*time.Second) != 1*time.Second {
+		t.Error("minDuration should return the smaller value")
+	}
+	if minDuration(3*time.Second, 3*time.Second) != 3*time.Second {
+		t.Error("minDuration should return equal values unchanged")
 	}
 }
 
-func TestMustABIType_InvalidType_Panics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("mustABIType with invalid type should panic")
+func TestGetEnv_ReturnsValue(t *testing.T) {
+	os.Setenv("TEST_WEAVE_KEY", "hello")
+	defer os.Unsetenv("TEST_WEAVE_KEY")
+	if getEnv("TEST_WEAVE_KEY", "fallback") != "hello" {
+		t.Error("getEnv should return the set value")
+	}
+}
+
+func TestGetEnv_ReturnsFallback(t *testing.T) {
+	os.Unsetenv("TEST_WEAVE_KEY_MISSING")
+	if getEnv("TEST_WEAVE_KEY_MISSING", "fallback") != "fallback" {
+		t.Error("getEnv should return fallback when key is not set")
+	}
+}
+
+func TestGetEnv_TrimsWhitespace(t *testing.T) {
+	os.Setenv("TEST_WEAVE_KEY_WS", "  trimmed  ")
+	defer os.Unsetenv("TEST_WEAVE_KEY_WS")
+	if getEnv("TEST_WEAVE_KEY_WS", "fallback") != "trimmed" {
+		t.Error("getEnv should trim whitespace")
+	}
+}
+
+// Indexer construction tests
+
+func TestNew_MissingFactoryAddress_ReturnsError(t *testing.T) {
+	os.Unsetenv("BASKET_FACTORY_ADDRESS")
+	_, err := New(nil, "ws://localhost", "http://localhost", "0x1234", 0, nil)
+	if err == nil {
+		t.Error("New() should return error when BASKET_FACTORY_ADDRESS is not set")
+	}
+	if !strings.Contains(err.Error(), "BASKET_FACTORY_ADDRESS") {
+		t.Errorf("error should mention BASKET_FACTORY_ADDRESS, got: %v", err)
+	}
+}
+
+func TestNew_WithFactoryAddress_Succeeds(t *testing.T) {
+	os.Setenv("BASKET_FACTORY_ADDRESS", "0xE9854c4734cd4A9dbC5086398A11df3c11f40b21")
+	defer os.Unsetenv("BASKET_FACTORY_ADDRESS")
+
+	idx, err := New(nil, "ws://localhost", "http://localhost", "0x19Ab3408af6503a7D4BeC255b064f8B02A345D04", 68391146, nil)
+	if err != nil {
+		t.Fatalf("New() should succeed with BASKET_FACTORY_ADDRESS set: %v", err)
+	}
+	if idx.factoryAddr.Hex() == (common.Address{}).Hex() {
+		t.Error("factoryAddr should be set")
+	}
+	if idx.registryAddr.Hex() == (common.Address{}).Hex() {
+		t.Error("registryAddr should be set")
+	}
+	if idx.deployBlock != 68391146 {
+		t.Errorf("deployBlock: expected 68391146, got %d", idx.deployBlock)
+	}
+}
+
+// blockTs cache tests
+
+func TestBlockTsCache_Eviction(t *testing.T) {
+	os.Setenv("BASKET_FACTORY_ADDRESS", "0xE9854c4734cd4A9dbC5086398A11df3c11f40b21")
+	defer os.Unsetenv("BASKET_FACTORY_ADDRESS")
+
+	idx, _ := New(nil, "", "", "0x1", 0, nil)
+
+	// Fill the cache to exactly blockTsCacheMax entries.
+	for i := uint64(0); i < blockTsCacheMax; i++ {
+		idx.blockTsMu.Lock()
+		if len(idx.blockTsFIFO) >= blockTsCacheMax {
+			oldest := idx.blockTsFIFO[0]
+			idx.blockTsFIFO = idx.blockTsFIFO[1:]
+			delete(idx.blockTs, oldest.blockNumber)
 		}
-	}()
-	mustABIType("notavalidtype")
-}
-
-func TestEventTopic_DeterministicHash(t *testing.T) {
-	// Same signature always produces the same hash.
-	h1 := eventTopic("Deposited(address,uint256,uint256,uint256)")
-	h2 := eventTopic("Deposited(address,uint256,uint256,uint256)")
-	if h1 != h2 {
-		t.Error("eventTopic is not deterministic")
+		idx.blockTs[i] = uint64(i * 1000)
+		idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: i, timestamp: uint64(i * 1000)})
+		idx.blockTsMu.Unlock()
 	}
 
-	// Different signatures produce different hashes.
-	h3 := eventTopic("Deposited(address,uint256,uint256)")
-	if h1 == h3 {
-		t.Error("different signatures should produce different hashes")
+	if len(idx.blockTs) != blockTsCacheMax {
+		t.Fatalf("cache should have exactly %d entries, got %d", blockTsCacheMax, len(idx.blockTs))
+	}
+
+	// Adding one more should evict the oldest (block 0).
+	newBlock := uint64(blockTsCacheMax)
+	idx.blockTsMu.Lock()
+	if len(idx.blockTsFIFO) >= blockTsCacheMax {
+		oldest := idx.blockTsFIFO[0]
+		idx.blockTsFIFO = idx.blockTsFIFO[1:]
+		delete(idx.blockTs, oldest.blockNumber)
+	}
+	idx.blockTs[newBlock] = 99999
+	idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: newBlock, timestamp: 99999})
+	idx.blockTsMu.Unlock()
+
+	idx.blockTsMu.Lock()
+	_, block0Present := idx.blockTs[0]
+	_, newBlockPresent := idx.blockTs[newBlock]
+	cacheLen := len(idx.blockTs)
+	idx.blockTsMu.Unlock()
+
+	if block0Present {
+		t.Error("block 0 should have been evicted from the cache")
+	}
+	if !newBlockPresent {
+		t.Error("new block should be present in the cache after insertion")
+	}
+	if cacheLen != blockTsCacheMax {
+		t.Errorf("cache size should remain at %d after eviction, got %d", blockTsCacheMax, cacheLen)
 	}
 }
 
-// FuzzDecodeAssetAddedData confirms the enriched AssetAdded ABI decoder
-// never panics on arbitrary input.
+func TestBlockTsCache_HitReturnsCachedValue(t *testing.T) {
+	os.Setenv("BASKET_FACTORY_ADDRESS", "0xE9854c4734cd4A9dbC5086398A11df3c11f40b21")
+	defer os.Unsetenv("BASKET_FACTORY_ADDRESS")
+
+	idx, _ := New(nil, "", "", "0x1", 0, nil)
+
+	idx.blockTsMu.Lock()
+	idx.blockTs[12345] = 1780525194
+	idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: 12345, timestamp: 1780525194})
+	idx.blockTsMu.Unlock()
+
+	// blockTimestamp with a nil client — should return the cached value without
+	// making any RPC call, so no panic despite the nil client.
+	ts := idx.blockTimestamp(nil, 12345)
+	if ts != 1780525194 {
+		t.Errorf("cache hit: expected 1780525194, got %d", ts)
+	}
+}
+
+// Fuzz tests
+
 func FuzzDecodeAssetAddedData(f *testing.F) {
-	// Seed with a known valid encoding of (symbol, name, sector, oracle).
 	oracle := common.HexToAddress("0x26daf42381ced15760c5f47a5072a228370b100b")
 	validData, _ := assetAddedABI.Pack("TSLA", "Tesla Inc", "Consumer Discretionary", oracle)
 	f.Add(validData)
@@ -510,8 +733,6 @@ func FuzzDecodeAssetAddedData(f *testing.F) {
 	})
 }
 
-// FuzzDecodeBasketCreatedData confirms the enriched BasketCreated ABI decoder
-// never panics on arbitrary input.
 func FuzzDecodeBasketCreatedData(f *testing.F) {
 	constituents := []common.Address{
 		common.HexToAddress("0xc9f9c86933092bbbfff3ccb4b105a4a94bf3bd4e"),
@@ -537,18 +758,75 @@ func FuzzDecodeBasketCreatedData(f *testing.F) {
 	})
 }
 
-// FuzzDecodeBigIntFromLogData confirms uint256 byte slice extraction never panics.
+func FuzzDecodeDepositedData(f *testing.F) {
+	usdgAmount   := big.NewInt(10_000_000)
+	tokensMinted, _ := new(big.Int).SetString("9950000000000000000", 10)
+	feeUsdg      := big.NewInt(50_000)
+	validData, _ := depositedABI.Pack(usdgAmount, tokensMinted, feeUsdg)
+	f.Add(validData)
+	f.Add([]byte{})
+	f.Add([]byte("garbage"))
+	f.Add(make([]byte, 96))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("depositedABI.Unpack panicked on input %x: %v", data, r)
+			}
+		}()
+		depositedABI.Unpack(data)
+	})
+}
+
+func FuzzDecodeRedeemedData(f *testing.F) {
+	tokensBurned, _ := new(big.Int).SetString("5000000000000000000", 10)
+	usdgReturned := big.NewInt(4_975_000)
+	feeUsdg      := big.NewInt(25_000)
+	validData, _ := redeemedABI.Pack(tokensBurned, usdgReturned, feeUsdg)
+	f.Add(validData)
+	f.Add([]byte{})
+	f.Add([]byte("garbage"))
+	f.Add(make([]byte, 96))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("redeemedABI.Unpack panicked on input %x: %v", data, r)
+			}
+		}()
+		redeemedABI.Unpack(data)
+	})
+}
+
+func FuzzDecodeFeeSnapshotData(f *testing.F) {
+	usdgAmount  := big.NewInt(40_000)
+	totalSupply := new(big.Int).Mul(big.NewInt(1_000_000), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
+	validData, _ := feeSnapshotABI.Pack(usdgAmount, totalSupply)
+	f.Add(validData)
+	f.Add([]byte{})
+	f.Add([]byte("garbage"))
+	f.Add(make([]byte, 64))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("feeSnapshotABI.Unpack panicked on input %x: %v", data, r)
+			}
+		}()
+		feeSnapshotABI.Unpack(data)
+	})
+}
+
 func FuzzDecodeBigIntFromLogData(f *testing.F) {
 	f.Add(make([]byte, 96))
 	f.Add(make([]byte, 0))
 	f.Add(make([]byte, 32))
 	f.Add(make([]byte, 1000))
 
-	// Seed with real deposit amounts from the AIIB basket creation.
 	realData, _ := hex.DecodeString(
 		"0000000000000000000000000000000000000000000000000000000000989680" +
-		"0000000000000000000000000000000000000000000000008a1580485b230000" +
-		"000000000000000000000000000000000000000000000000000000000000c350",
+			"0000000000000000000000000000000000000000000000008a1580485b230000" +
+			"000000000000000000000000000000000000000000000000000000000000c350",
 	)
 	f.Add(realData)
 
@@ -558,11 +836,9 @@ func FuzzDecodeBigIntFromLogData(f *testing.F) {
 				t.Errorf("big.Int extraction panicked on input length %d: %v", len(data), r)
 			}
 		}()
-
 		if len(data) < 96 {
 			return
 		}
-
 		new(big.Int).SetBytes(data[0:32])
 		new(big.Int).SetBytes(data[32:64])
 		new(big.Int).SetBytes(data[64:96])

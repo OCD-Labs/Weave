@@ -211,7 +211,7 @@ func seedBasketStateCache(t *testing.T, database *db.DB, basketAddr string) {
 	}
 }
 
-// ── Catalogue ─────────────────────────────────────────────────────────────────
+// Catalogue 
 
 func TestGetCatalogue_Empty(t *testing.T) {
 	router := newTestRouter(t)
@@ -365,7 +365,7 @@ func TestGetCatalogueAsset_NotFound(t *testing.T) {
 	}
 }
 
-// ── Baskets ───────────────────────────────────────────────────────────────────
+// Baskets
 
 func TestListBaskets_Empty(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/baskets", nil)
@@ -596,7 +596,7 @@ func TestGetBasketPerformance_WithData(t *testing.T) {
 	database := newTestDB(t)
 	seedTestBasket(t, database, "0xbasket1", "Test", "TST", 0)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		database.Exec(`
 			INSERT INTO nav_history (basket_address, nav_per_token, total_value_usdg, timestamp)
 			VALUES (?, ?, ?, ?)`,
@@ -628,7 +628,7 @@ func TestGetBasketPerformance_WithData(t *testing.T) {
 	}
 }
 
-// ── Prices ────────────────────────────────────────────────────────────────────
+// Prices
 
 func TestGetPrices_Empty(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/prices", nil)
@@ -670,7 +670,7 @@ func TestGetPrices_WithData(t *testing.T) {
 	}
 }
 
-// ── Positions ─────────────────────────────────────────────────────────────────
+// Positions
 
 func TestGetPortfolio_NoPositions(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/positions/0x4e4b989abe79381c1b8a4871d6af481b175f4865", nil)
@@ -780,7 +780,7 @@ func TestGetPosition_SingleBasket(t *testing.T) {
 	}
 }
 
-// ── Creator ───────────────────────────────────────────────────────────────────
+// Creator
 
 func TestGetCreatorDashboard_NoBaskets(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/creator/0x4e4b989abe79381c1b8a4871d6af481b175f4865", nil)
@@ -887,7 +887,7 @@ func TestGetCreatorToken_NoSnapshots(t *testing.T) {
 	}
 }
 
-// ── AI Compose ────────────────────────────────────────────────────────────────
+// AI Compose
 
 func TestAICompose_TooFewAssets_Returns503(t *testing.T) {
 	// With an empty catalogue (fewer than 3 assets), the handler returns 503
@@ -944,7 +944,7 @@ func TestAICompose_WithCatalogue_NoAPIKey_Returns502(t *testing.T) {
 	}
 }
 
-// ── Infrastructure ────────────────────────────────────────────────────────────
+// Infrastructure
 
 func TestCORSHeaders_Options(t *testing.T) {
 	req := httptest.NewRequest(http.MethodOptions, "/catalogue", nil)

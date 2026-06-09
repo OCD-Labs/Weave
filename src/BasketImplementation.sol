@@ -13,7 +13,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 /// @notice Shared logic contract for all basket proxies.
 /// Each BasketProxy (ERC-1167 clone) delegates here.
-/// This contract IS the ERC-20 basket token — no separate token contract per basket.
+/// This contract IS the ERC-20 basket token.
 ///
 /// STORAGE LAYOUT — never reorder. Proxy compatibility depends on slot stability.
 /// Slot 0:  bool _initialized
@@ -147,7 +147,7 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         return s.length > 0 ? _basketSymbol : super.symbol();
     }
 
-    // ── Core functions ────────────────────────────────────────────────────────
+    // Core functions
 
     /// @notice Deposit USDG into the basket.
     /// Fee is deducted first, then net USDG buys constituents in target proportions.
@@ -357,7 +357,7 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         _distributeFee(usdgBalance, reg);
     }
 
-    // ── View functions ────────────────────────────────────────────────────────
+    // View functions
 
     function totalValueUsdg() external view override returns (uint256) {
         return _totalValueUsdg(IWeaveRegistry(registry));
@@ -462,7 +462,7 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         maxDriftOut          = _computeMaxDrift(currentWeightsOut);
     }
 
-    // ── Internal helpers ──────────────────────────────────────────────────────
+    // Internal helpers
 
     function _computeMaxDrift(
         uint256[] memory currentWeights

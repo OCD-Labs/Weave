@@ -106,7 +106,7 @@ clean:
 	forge clean
 	rm -rf dist bin coverage-report lcov.info
 
-# Emergency: pull all funded tokens back from the MockSwapRouter to your wallet.
+# Emergency: pull all funded tokens back from the SwapRouter to your wallet.
 # Usage: make router-withdraw-all
 .PHONY: router-withdraw-all
 router-withdraw-all:
@@ -119,7 +119,7 @@ router-withdraw-all:
 # Withdraw a single token: make router-withdraw TOKEN=0x... AMOUNT=1000000000000000000
 .PHONY: router-withdraw
 router-withdraw:
-	cast send $(MOCK_SWAP_ROUTER_ADDRESS) \
+	cast send $(SWAP_ROUTER_ADDRESS) \
 		"withdraw(address,uint256)" \
 		$(TOKEN) $(AMOUNT) \
 		--rpc-url $(RPC_URL) \
