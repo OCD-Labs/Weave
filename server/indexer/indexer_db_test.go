@@ -974,11 +974,23 @@ func TestWriteFeeSnapshot_WritesCorrectSnapshotID(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
 
-	basketAddr := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
-	snapshotID := int64(7)
-	usdgAmount := big.NewInt(80_000)
+	basketAddr      := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
+	creatorTokenAddr := common.HexToAddress("0x29ba5c3470b3a6c06bd6cce2e43c019d846c01c0")
+
+	if _, err := d.Exec(`
+		INSERT INTO baskets (address, creator_token_address, creator_address, name, symbol, thesis,
+		    rebalancing_enabled, created_at, created_tx, suspended)
+		VALUES (?, ?, '0x0', '', '', '', 0, 0, '', 0)`,
+		strings.ToLower(basketAddr.Hex()),
+		strings.ToLower(creatorTokenAddr.Hex()),
+	); err != nil {
+		t.Fatalf("seed basket: %v", err)
+	}
+
+	snapshotID  := int64(7)
+	usdgAmount  := big.NewInt(80_000)
 	totalSupply := new(big.Int).Mul(big.NewInt(1_000_000), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
-	data, _ := feeSnapshotABI.Pack(usdgAmount, totalSupply)
+	data, _     := feeSnapshotABI.Pack(usdgAmount, totalSupply)
 
 	vLog := types.Log{
 		Topics: []common.Hash{
@@ -989,7 +1001,7 @@ func TestWriteFeeSnapshot_WritesCorrectSnapshotID(t *testing.T) {
 		BlockNumber: 300,
 		TxHash:      common.HexToHash("0xsnap01"),
 		Index:       0,
-		Address:     basketAddr,
+		Address:     creatorTokenAddr,
 	}
 
 	tx, err := d.Begin()
