@@ -22,24 +22,11 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
-// rpcTimeout is the per-call deadline applied to every RPC request.
 const rpcTimeout = 15 * time.Second
-
-// chunkSize is the number of blocks fetched per FilterLogs call.
 const chunkSize = int64(2000)
-
-// seedMaxAttempts is the maximum number of times seedOneBasket will be
-// retried for a given basket across all startups before it is skipped permanently.
 const seedMaxAttempts = 5
-
-// blockTsCacheMax is the maximum number of block timestamps held in the
-// bounded FIFO cache.
 const blockTsCacheMax = 4096
-
-// reconnectBaseDelay is the starting delay for WebSocket reconnection backoff.
 const reconnectBaseDelay = 1 * time.Second
-
-// reconnectMaxDelay is the ceiling for WebSocket reconnection backoff.
 const reconnectMaxDelay = 5 * time.Minute
 
 var (
@@ -169,14 +156,12 @@ func init() {
 		{Name: "oracle", Type: addrType},
 	}
 
-	// Deposited(address indexed investor, uint256 usdgAmount, uint256 basketTokensMinted, uint256 feeUsdg)
 	depositedABI = abi.Arguments{
 		{Name: "usdgAmount",         Type: uint256Type},
 		{Name: "basketTokensMinted", Type: uint256Type},
 		{Name: "feeUsdg",            Type: uint256Type},
 	}
 
-	// Redeemed(address indexed investor, uint256 basketTokensBurned, uint256 usdgReturned, uint256 feeUsdg)
 	redeemedABI = abi.Arguments{
 		{Name: "basketTokensBurned", Type: uint256Type},
 		{Name: "usdgReturned",       Type: uint256Type},
@@ -184,13 +169,13 @@ func init() {
 	}
 
 	// RevenueSnapshoted(uint256 indexed snapshotId, uint256 usdgAmount, uint256 totalSupply)
+	// snapshotId is Topics[1]; usdgAmount and totalSupply are in Data.
 	feeSnapshotABI = abi.Arguments{
 		{Name: "usdgAmount",  Type: uint256Type},
 		{Name: "totalSupply", Type: uint256Type},
 	}
 }
 
-// blockTsEntry is a single slot in the bounded FIFO timestamp cache.
 type blockTsEntry struct {
 	blockNumber uint64
 	timestamp   uint64
@@ -206,11 +191,16 @@ type Indexer struct {
 	deployBlock  int64
 	db           *db.DB
 
+	// basketAddrs is the set of known basket proxy addresses for filter construction.
 	mu          sync.RWMutex
 	basketAddrs map[common.Address]bool
 
-	// blockTs is a bounded FIFO cache of block number → Unix timestamp.
-	// Protected by blockTsMu.
+	// creatorTokenAddrs maps each CreatorToken address → its basket address.
+	// RevenueSnapshoted is emitted by CreatorToken contracts, not basket proxies.
+	// These addresses must be included in the event filter, and the mapping lets
+	// handleFeeSnapshot store the correct basket_address in fee_snapshots.
+	creatorTokenToBasket map[common.Address]common.Address
+
 	blockTsMu   sync.Mutex
 	blockTs     map[uint64]uint64
 	blockTsFIFO []blockTsEntry
@@ -229,21 +219,21 @@ func New(
 	}
 
 	return &Indexer{
-		ctx:          ctx,
-		wsURL:        wsURL,
-		rpcURL:       rpcURL,
-		registryAddr: common.HexToAddress(registryAddr),
-		factoryAddr:  common.HexToAddress(factoryAddrStr),
-		deployBlock:  deployBlock,
-		db:           database,
-		basketAddrs:  make(map[common.Address]bool),
-		blockTs:      make(map[uint64]uint64, blockTsCacheMax),
-		blockTsFIFO:  make([]blockTsEntry, 0, blockTsCacheMax),
+		ctx:                  ctx,
+		wsURL:                wsURL,
+		rpcURL:               rpcURL,
+		registryAddr:         common.HexToAddress(registryAddr),
+		factoryAddr:          common.HexToAddress(factoryAddrStr),
+		deployBlock:          deployBlock,
+		db:                   database,
+		basketAddrs:          make(map[common.Address]bool),
+		creatorTokenToBasket: make(map[common.Address]common.Address),
+		blockTs:              make(map[uint64]uint64, blockTsCacheMax),
+		blockTsFIFO:          make([]blockTsEntry, 0, blockTsCacheMax),
 	}, nil
 }
 
-// Run starts the indexer. It syncs chain state, then launches the historical
-// scan and live subscription concurrently so no events are missed during catchup.
+// Run starts the indexer.
 func (idx *Indexer) Run() {
 	idx.syncFromChain()
 
@@ -432,8 +422,11 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 			continue
 		}
 
-		basket       := strings.ToLower(basketField.Interface().(common.Address).Hex())
-		creatorToken := strings.ToLower(creatorTokenField.Interface().(common.Address).Hex())
+		basketCommon      := basketField.Interface().(common.Address)
+		creatorTokenCommon := creatorTokenField.Interface().(common.Address)
+
+		basket       := strings.ToLower(basketCommon.Hex())
+		creatorToken := strings.ToLower(creatorTokenCommon.Hex())
 		creator      := strings.ToLower(creatorField.Interface().(common.Address).Hex())
 		createdAt    := createdAtField.Interface().(*big.Int).Int64()
 		suspended    := 0
@@ -457,7 +450,8 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 		}
 
 		idx.mu.Lock()
-		idx.basketAddrs[common.HexToAddress(basket)] = true
+		idx.basketAddrs[basketCommon] = true
+		idx.creatorTokenToBasket[creatorTokenCommon] = basketCommon
 		idx.mu.Unlock()
 		count++
 	}
@@ -615,8 +609,6 @@ func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) e
 		return err
 	}
 
-	// Resolve constituent symbols before opening the write transaction to
-	// avoid holding a write lock during reads.
 	type constituentRow struct {
 		addr   string
 		symbol string
@@ -787,10 +779,6 @@ func (idx *Indexer) writeChunkAtomic(client *ethclient.Client, logs []types.Log,
 		}
 
 		if vLog.Topics[0] == topicBasketCreated {
-			// BasketCreated writes to two tables and updates basketAddrs.
-			// It needs its own transaction. Commit the current chunk tx
-			// first so its writes are durable, handle the basket, then
-			// open a fresh chunk tx for any remaining logs.
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("pre-basket commit: %w", err)
 			}
@@ -924,9 +912,11 @@ func (idx *Indexer) handleBasketCreated(client *ethclient.Client, vLog types.Log
 		return
 	}
 
-	basket       := strings.ToLower(common.HexToAddress(vLog.Topics[1].Hex()).Hex())
-	creatorToken := strings.ToLower(common.HexToAddress(vLog.Topics[2].Hex()).Hex())
-	creator      := strings.ToLower(common.HexToAddress(vLog.Topics[3].Hex()).Hex())
+	basketCommon      := common.HexToAddress(vLog.Topics[1].Hex())
+	creatorTokenCommon := common.HexToAddress(vLog.Topics[2].Hex())
+	basket             := strings.ToLower(basketCommon.Hex())
+	creatorToken       := strings.ToLower(creatorTokenCommon.Hex())
+	creator            := strings.ToLower(common.HexToAddress(vLog.Topics[3].Hex()).Hex())
 
 	decoded, err := basketCreatedABI.Unpack(vLog.Data)
 	if err != nil || len(decoded) < 6 {
@@ -1011,10 +1001,11 @@ func (idx *Indexer) handleBasketCreated(client *ethclient.Client, vLog types.Log
 	}
 
 	idx.mu.Lock()
-	idx.basketAddrs[common.HexToAddress(basket)] = true
+	idx.basketAddrs[basketCommon] = true
+	idx.creatorTokenToBasket[creatorTokenCommon] = basketCommon
 	idx.mu.Unlock()
 
-	log.Printf("indexer: basket %s indexed with %d constituents", basket, len(cRows))
+	log.Printf("indexer: basket %s indexed with %d constituents (creatorToken=%s)", basket, len(cRows), creatorToken)
 }
 
 func (idx *Indexer) handleAssetAdded(vLog types.Log) {
@@ -1130,9 +1121,38 @@ func (idx *Indexer) writeRebalanced(tx *sql.Tx, client *ethclient.Client, vLog t
 	return err
 }
 
+// writeFeeSnapshot handles RevenueSnapshoted events emitted by CreatorToken contracts.
 func (idx *Indexer) writeFeeSnapshot(tx *sql.Tx, client *ethclient.Client, vLog types.Log) error {
 	if len(vLog.Topics) < 2 {
 		return nil
+	}
+
+	creatorTokenAddr := strings.ToLower(vLog.Address.Hex())
+	creatorTokenCommon := vLog.Address
+
+	idx.mu.RLock()
+	basketCommon, found := idx.creatorTokenToBasket[creatorTokenCommon]
+	idx.mu.RUnlock()
+
+	var basketAddr string
+	if found {
+		basketAddr = strings.ToLower(basketCommon.Hex())
+	} else {
+		err := idx.db.QueryRow(
+			`SELECT address FROM baskets WHERE creator_token_address = ?`,
+			creatorTokenAddr,
+		).Scan(&basketAddr)
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("indexer: writeFeeSnapshot: no basket found for creatorToken %s — skipping", creatorTokenAddr)
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("writeFeeSnapshot basket lookup for creatorToken %s: %w", creatorTokenAddr, err)
+		}
+		// Populate the in-memory map so subsequent events don't hit the DB.
+		idx.mu.Lock()
+		idx.creatorTokenToBasket[creatorTokenCommon] = common.HexToAddress(basketAddr)
+		idx.mu.Unlock()
 	}
 
 	snapshotID := new(big.Int).SetBytes(vLog.Topics[1].Bytes()).Int64()
@@ -1142,7 +1162,6 @@ func (idx *Indexer) writeFeeSnapshot(tx *sql.Tx, client *ethclient.Client, vLog 
 		return fmt.Errorf("RevenueSnapshoted unpack tx=%s: %w", vLog.TxHash.Hex(), err)
 	}
 
-	basket     := strings.ToLower(vLog.Address.Hex())
 	usdgAmount := decoded[0].(*big.Int)
 	ts         := idx.blockTimestamp(client, vLog.BlockNumber)
 
@@ -1150,7 +1169,7 @@ func (idx *Indexer) writeFeeSnapshot(tx *sql.Tx, client *ethclient.Client, vLog 
 		INSERT INTO fee_snapshots (basket_address, snapshot_id, usdg_amount, timestamp, tx_hash, log_index)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(tx_hash, log_index) DO NOTHING`,
-		basket, snapshotID, usdgAmount.String(), ts, vLog.TxHash.Hex(), vLog.Index,
+		basketAddr, snapshotID, usdgAmount.String(), ts, vLog.TxHash.Hex(), vLog.Index,
 	)
 	return err
 }
@@ -1218,8 +1237,7 @@ func (idx *Indexer) blockTimestamp(client *ethclient.Client, blockNumber uint64)
 }
 
 // subscribe opens a WebSocket connection and processes live events until
-// ctx is cancelled or the connection drops. Events are drained in a separate
-// goroutine so the receive loop never blocks on handler RPC calls.
+// ctx is cancelled or the connection drops.
 func (idx *Indexer) subscribe() error {
 	dialCtx, dialCancel := context.WithTimeout(idx.ctx, rpcTimeout)
 	defer dialCancel()
@@ -1258,17 +1276,21 @@ func (idx *Indexer) subscribe() error {
 	}
 }
 
-// filterAddresses returns the registry, factory, and all known basket proxy
-// addresses to include in a FilterQuery.
+// filterAddresses returns all addresses to include in FilterQuery:
+// registry, factory, all known basket proxies, and all known creator token contracts.
 func (idx *Indexer) filterAddresses() []common.Address {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	addresses := make([]common.Address, 0, len(idx.basketAddrs)+2)
+	addresses := make([]common.Address, 0, len(idx.basketAddrs)+len(idx.creatorTokenToBasket)+2)
 	addresses = append(addresses, idx.registryAddr)
 	addresses = append(addresses, idx.factoryAddr)
 	for addr := range idx.basketAddrs {
 		addresses = append(addresses, addr)
+	}
+	// Include all known creator token addresses so RevenueSnapshoted events are received.
+	for creatorToken := range idx.creatorTokenToBasket {
+		addresses = append(addresses, creatorToken)
 	}
 	return addresses
 }

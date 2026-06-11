@@ -1460,25 +1460,27 @@ func (h *handler) getClaimableSnapshots(
 				}, nil)
 				callCancel()
 
-				if err == nil {
+				if err != nil {
+					log.Printf("api: claimableRevenue RPC snapshot=%d wallet=%s: %v", snap.SnapshotID, wallet, err)
+				} else {
 					unpacked, err := claimableABI.Methods["claimableRevenue"].Outputs.Unpack(data)
 					if err == nil && len(unpacked) > 0 {
 						if amount, ok := unpacked[0].(*big.Int); ok && amount != nil {
 							claimable = amount.String()
 						}
 					}
+
+					h.db.Exec(`
+									INSERT INTO creator_claimable_cache
+										(wallet_address, snapshot_id, basket_address, claimable_usdg, cached_at)
+									VALUES (?, ?, ?, ?, ?)
+									ON CONFLICT(wallet_address, snapshot_id, basket_address) DO UPDATE SET
+										claimable_usdg = excluded.claimable_usdg,
+										cached_at      = excluded.cached_at`,
+						wallet, snap.SnapshotID, basketAddr, claimable, now,
+					)
 				}
 			}
-
-			h.db.Exec(`
-				INSERT INTO creator_claimable_cache
-					(wallet_address, snapshot_id, basket_address, claimable_usdg, cached_at)
-				VALUES (?, ?, ?, ?, ?)
-				ON CONFLICT(wallet_address, snapshot_id, basket_address) DO UPDATE SET
-					claimable_usdg = excluded.claimable_usdg,
-					cached_at      = excluded.cached_at`,
-				wallet, snap.SnapshotID, basketAddr, claimable, now,
-			)
 		}
 
 		snap.ClaimableUsdg = claimable
