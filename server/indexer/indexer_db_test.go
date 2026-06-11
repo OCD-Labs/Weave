@@ -14,8 +14,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-// testSchema is the minimal schema required by the indexer tests.
-// It mirrors schema.sql SQL scripts.
 const testSchema = `
 CREATE TABLE IF NOT EXISTS baskets (
     address               TEXT PRIMARY KEY,
@@ -133,8 +131,6 @@ CREATE TABLE IF NOT EXISTS creator_claimable_cache (
 );
 `
 
-// newTestDB opens a fresh in-memory SQLite database with the full production
-// schema applied. Each test gets its own database; there is no shared state.
 func newTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	dir := t.TempDir()
@@ -146,7 +142,6 @@ func newTestDB(t *testing.T) *db.DB {
 	return d
 }
 
-// newTestIndexer constructs an Indexer wired to the given database.
 func newTestIndexer(t *testing.T, d *db.DB) *Indexer {
 	t.Helper()
 	os.Setenv("BASKET_FACTORY_ADDRESS", "0xE9854c4734cd4A9dbC5086398A11df3c11f40b21")
@@ -166,7 +161,6 @@ func newTestIndexer(t *testing.T, d *db.DB) *Indexer {
 	return idx
 }
 
-// insertAsset is a test helper that seeds a supported_assets row directly.
 func insertAsset(t *testing.T, d *db.DB, address, symbol string) {
 	t.Helper()
 	_, err := d.Exec(`
@@ -181,9 +175,6 @@ func insertAsset(t *testing.T, d *db.DB, address, symbol string) {
 
 // writeChunkAtomic tests
 
-// TestWriteChunkAtomic_DepositWrittenAndCursorAdvanced verifies that a
-// Deposited event in a chunk is written to the deposits table and the cursor
-// is advanced to endBlock in the same transaction.
 func TestWriteChunkAtomic_DepositWrittenAndCursorAdvanced(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -191,8 +182,6 @@ func TestWriteChunkAtomic_DepositWrittenAndCursorAdvanced(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO sync_cursors (key, block_num) VALUES ('events', 68391146)`); err != nil {
 		t.Fatalf("seed cursor: %v", err)
 	}
-
-	// Seed basket so the deposit foreign-key-style lookup succeeds.
 	if _, err := d.Exec(`
 		INSERT INTO baskets (address, creator_token_address, creator_address, name, symbol, thesis,
 		    rebalancing_enabled, created_at, created_tx, suspended)
@@ -200,17 +189,19 @@ func TestWriteChunkAtomic_DepositWrittenAndCursorAdvanced(t *testing.T) {
 		t.Fatalf("seed basket: %v", err)
 	}
 
-	investor := common.HexToAddress("0x4e4b989abe79381c1b8a4871d6af481b175f4865")
-	usdg     := big.NewInt(10_000_000)
+	// Pre-populate the in-memory set so the deposit passes the address check.
+	idx.mu.Lock()
+	idx.basketAddrs[common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")] = true
+	idx.mu.Unlock()
+
+	investor  := common.HexToAddress("0x4e4b989abe79381c1b8a4871d6af481b175f4865")
+	usdg      := big.NewInt(10_000_000)
 	tokens, _ := new(big.Int).SetString("9950000000000000000", 10)
-	fee      := big.NewInt(50_000)
-	data, _  := depositedABI.Pack(usdg, tokens, fee)
+	fee       := big.NewInt(50_000)
+	data, _   := depositedABI.Pack(usdg, tokens, fee)
 
 	vLog := types.Log{
-		Topics: []common.Hash{
-			topicDeposited,
-			common.BytesToHash(investor.Bytes()),
-		},
+		Topics:      []common.Hash{topicDeposited, common.BytesToHash(investor.Bytes())},
 		Data:        data,
 		BlockNumber: 68391200,
 		TxHash:      common.HexToHash("0xdeadbeef01"),
@@ -218,14 +209,10 @@ func TestWriteChunkAtomic_DepositWrittenAndCursorAdvanced(t *testing.T) {
 		Address:     common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6"),
 	}
 
-	// writeChunkAtomic with a nil client — blockTimestamp will fail the RPC
-	// and store 0, which is acceptable for this test since we are verifying
-	// write correctness, not timestamp resolution.
 	if err := idx.writeChunkAtomic(nil, []types.Log{vLog}, 68391300); err != nil {
 		t.Fatalf("writeChunkAtomic: %v", err)
 	}
 
-	// Verify deposit row exists.
 	var count int
 	if err := d.QueryRow(
 		`SELECT COUNT(*) FROM deposits WHERE basket_address = ?`,
@@ -237,7 +224,6 @@ func TestWriteChunkAtomic_DepositWrittenAndCursorAdvanced(t *testing.T) {
 		t.Errorf("expected 1 deposit row, got %d", count)
 	}
 
-	// Verify cursor was advanced.
 	var cursor int64
 	if err := d.QueryRow(`SELECT block_num FROM sync_cursors WHERE key = 'events'`).Scan(&cursor); err != nil {
 		t.Fatalf("read cursor: %v", err)
@@ -247,9 +233,6 @@ func TestWriteChunkAtomic_DepositWrittenAndCursorAdvanced(t *testing.T) {
 	}
 }
 
-// TestWriteChunkAtomic_IdempotentOnReplay verifies that replaying the same
-// chunk twice (simulating a crash-restart) produces exactly one deposit row,
-// not two.
 func TestWriteChunkAtomic_IdempotentOnReplay(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -265,6 +248,10 @@ func TestWriteChunkAtomic_IdempotentOnReplay(t *testing.T) {
 		t.Fatalf("seed basket: %v", err)
 	}
 
+	idx.mu.Lock()
+	idx.basketAddrs[common.HexToAddress(idempotBasket)] = true
+	idx.mu.Unlock()
+
 	investor := common.HexToAddress("0x4e4b989abe79381c1b8a4871d6af481b175f4865")
 	data, _  := depositedABI.Pack(big.NewInt(1_000_000), big.NewInt(990_000_000_000_000_000), big.NewInt(10_000))
 
@@ -279,21 +266,16 @@ func TestWriteChunkAtomic_IdempotentOnReplay(t *testing.T) {
 
 	logs := []types.Log{vLog}
 
-	// First write.
 	if err := idx.writeChunkAtomic(nil, logs, 100); err != nil {
 		t.Fatalf("first writeChunkAtomic: %v", err)
 	}
-
-	// Replay the same chunk — simulates crash-restart where cursor was not yet
-	// advanced or was re-read from a previous checkpoint.
 	if err := idx.writeChunkAtomic(nil, logs, 100); err != nil {
 		t.Fatalf("second writeChunkAtomic (replay): %v", err)
 	}
 
 	var count int
 	if err := d.QueryRow(
-		`SELECT COUNT(*) FROM deposits WHERE basket_address = ?`,
-		idempotBasket,
+		`SELECT COUNT(*) FROM deposits WHERE basket_address = ?`, idempotBasket,
 	).Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -302,8 +284,6 @@ func TestWriteChunkAtomic_IdempotentOnReplay(t *testing.T) {
 	}
 }
 
-// TestWriteChunkAtomic_CursorNotAdvancedOnWriteError verifies that if a log
-// write fails, the cursor stays at its original value.
 func TestWriteChunkAtomic_EmptyChunkAdvancesCursor(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -325,8 +305,6 @@ func TestWriteChunkAtomic_EmptyChunkAdvancesCursor(t *testing.T) {
 	}
 }
 
-// TestWriteChunkAtomic_MultipleEventTypes verifies that a chunk containing
-// a deposit, a redemption, and a rebalance all write correctly in one transaction.
 func TestWriteChunkAtomic_MultipleEventTypes(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -342,7 +320,11 @@ func TestWriteChunkAtomic_MultipleEventTypes(t *testing.T) {
 		t.Fatalf("seed basket: %v", err)
 	}
 
-	investor    := common.HexToAddress("0x4e4b989abe79381c1b8a4871d6af481b175f4865")
+	idx.mu.Lock()
+	idx.basketAddrs[common.HexToAddress(basketAddr)] = true
+	idx.mu.Unlock()
+
+	investor     := common.HexToAddress("0x4e4b989abe79381c1b8a4871d6af481b175f4865")
 	basketCommon := common.HexToAddress(basketAddr)
 
 	depositData, _ := depositedABI.Pack(big.NewInt(1_000_000), big.NewInt(990_000_000_000_000_000), big.NewInt(10_000))
@@ -380,9 +362,9 @@ func TestWriteChunkAtomic_MultipleEventTypes(t *testing.T) {
 	}
 
 	var deposits, redemptions, rebalances int
-	d.QueryRow(`SELECT COUNT(*) FROM deposits WHERE basket_address = ?`, "0x474835c4da0393bc87d4e85e36fdce3f56edeaa6").Scan(&deposits)
-	d.QueryRow(`SELECT COUNT(*) FROM redemptions WHERE basket_address = ?`, "0x474835c4da0393bc87d4e85e36fdce3f56edeaa6").Scan(&redemptions)
-	d.QueryRow(`SELECT COUNT(*) FROM rebalances WHERE basket_address = ?`, "0x474835c4da0393bc87d4e85e36fdce3f56edeaa6").Scan(&rebalances)
+	d.QueryRow(`SELECT COUNT(*) FROM deposits WHERE basket_address = ?`, basketAddr).Scan(&deposits)
+	d.QueryRow(`SELECT COUNT(*) FROM redemptions WHERE basket_address = ?`, basketAddr).Scan(&redemptions)
+	d.QueryRow(`SELECT COUNT(*) FROM rebalances WHERE basket_address = ?`, basketAddr).Scan(&rebalances)
 
 	if deposits != 1 {
 		t.Errorf("expected 1 deposit, got %d", deposits)
@@ -395,15 +377,104 @@ func TestWriteChunkAtomic_MultipleEventTypes(t *testing.T) {
 	}
 }
 
-// handleBasketCreated database tests
-
-// TestHandleBasketCreated_WritesBasketAndConstituents verifies that
-// handleBasketCreated writes the basket row and all constituent rows atomically.
-func TestHandleBasketCreated_WritesBasketAndConstituents(t *testing.T) {
+// TestWriteChunkAtomic_BasketCreatedBeforeDeposited verifies the pre-pass
+// correctly handles the factory emitting Deposited before BasketCreated
+// in the same transaction, so the deposit is not dropped.
+func TestWriteChunkAtomic_BasketCreatedBeforeDeposited(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
 
-	// Seed the constituent asset so symbol lookup succeeds.
+	if _, err := d.Exec(`INSERT INTO sync_cursors (key, block_num) VALUES ('events', 0)`); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
+
+	insertAsset(t, d, "0xc9f9c86933092bbbfff3ccb4b105a4a94bf3bd4e", "TSLA")
+	insertAsset(t, d, "0x5884ad2f920c162cfbbacc88c9c51aa75ec09e02", "AMZN")
+	insertAsset(t, d, "0x71178bac73cbeb415514eb542a8995b82669778d", "AMD")
+
+	basket       := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
+	creatorToken := common.HexToAddress("0x29ba5c3470b3a6c06bd6cce2e43c019d846c01c0")
+	creator      := common.HexToAddress("0x4e4b989abe79381c1b8a4871d6af481b175f4865")
+	constituents := []common.Address{
+		common.HexToAddress("0xc9f9c86933092bbbfff3ccb4b105a4a94bf3bd4e"),
+		common.HexToAddress("0x5884ad2f920c162cfbbacc88c9c51aa75ec09e02"),
+		common.HexToAddress("0x71178bac73cbeb415514eb542a8995b82669778d"),
+	}
+	weights := []*big.Int{big.NewInt(5000), big.NewInt(3000), big.NewInt(2000)}
+
+	basketCreatedData, _ := basketCreatedABI.Pack("AI Infra", "AIIB", "thesis", constituents, weights, false)
+	basketCreatedLog := types.Log{
+		Topics: []common.Hash{
+			topicBasketCreated,
+			common.BytesToHash(basket.Bytes()),
+			common.BytesToHash(creatorToken.Bytes()),
+			common.BytesToHash(creator.Bytes()),
+		},
+		Data:        basketCreatedData,
+		BlockNumber: 500,
+		TxHash:      common.HexToHash("0xcreatetx01"),
+		Index:       2, // emitted last in the transaction
+		Address:     common.HexToAddress("0xE9854c4734cd4A9dbC5086398A11df3c11f40b21"),
+	}
+
+	// Deposited is emitted before BasketCreated by the factory contract.
+	usdg      := big.NewInt(10_000_000)
+	tokens, _ := new(big.Int).SetString("9950000000000000000", 10)
+	fee       := big.NewInt(50_000)
+	depositData, _ := depositedABI.Pack(usdg, tokens, fee)
+	depositedLog := types.Log{
+		Topics:      []common.Hash{topicDeposited, common.BytesToHash(creator.Bytes())},
+		Data:        depositData,
+		BlockNumber: 500,
+		TxHash:      common.HexToHash("0xcreatetx01"),
+		Index:       1, // emitted before BasketCreated
+		Address:     basket,
+	}
+
+	// Logs arrive in emission order: Deposited first, BasketCreated second.
+	logs := []types.Log{depositedLog, basketCreatedLog}
+
+	if err := idx.writeChunkAtomic(nil, logs, 500); err != nil {
+		t.Fatalf("writeChunkAtomic: %v", err)
+	}
+
+	// Basket row must exist.
+	var name string
+	if err := d.QueryRow(`SELECT name FROM baskets WHERE address = ?`,
+		strings.ToLower(basket.Hex())).Scan(&name); err != nil {
+		t.Fatalf("basket not written: %v", err)
+	}
+	if name != "AI Infra" {
+		t.Errorf("basket name: expected AI Infra, got %q", name)
+	}
+
+	// Deposit must have been written despite arriving before BasketCreated.
+	var depositCount int
+	d.QueryRow(`SELECT COUNT(*) FROM deposits WHERE basket_address = ?`,
+		strings.ToLower(basket.Hex())).Scan(&depositCount)
+	if depositCount != 1 {
+		t.Errorf("expected 1 deposit row, got %d — pre-pass failed to make basket known before deposit", depositCount)
+	}
+
+	// Address sets must be updated after commit.
+	idx.mu.RLock()
+	basketKnown := idx.basketAddrs[basket]
+	_, ctKnown  := idx.creatorTokenToBasket[creatorToken]
+	idx.mu.RUnlock()
+	if !basketKnown {
+		t.Error("basket not in basketAddrs after commit")
+	}
+	if !ctKnown {
+		t.Error("creator token not in creatorTokenToBasket after commit")
+	}
+}
+
+// writeBasketCreated tests
+
+func TestWriteBasketCreated_WritesBasketAndConstituents(t *testing.T) {
+	d := newTestDB(t)
+	idx := newTestIndexer(t, d)
+
 	insertAsset(t, d, "0xc9f9c86933092bbbfff3ccb4b105a4a94bf3bd4e", "TSLA")
 	insertAsset(t, d, "0x5884ad2f920c162cfbbacc88c9c51aa75ec09e02", "AMZN")
 
@@ -430,13 +501,22 @@ func TestHandleBasketCreated_WritesBasketAndConstituents(t *testing.T) {
 		Address:     common.HexToAddress("0xE9854c4734cd4A9dbC5086398A11df3c11f40b21"),
 	}
 
-	// nil client — blockTimestamp will return 0, which is acceptable here.
-	idx.handleBasketCreated(nil, vLog)
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	local := newChunkAddrs()
+	if err := idx.writeBasketCreated(tx, nil, vLog, local); err != nil {
+		tx.Rollback()
+		t.Fatalf("writeBasketCreated: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
 
-	// Basket row must exist.
 	var name, symbol string
 	var suspended int
-	err := d.QueryRow(
+	err = d.QueryRow(
 		`SELECT name, symbol, suspended FROM baskets WHERE address = ?`,
 		strings.ToLower(basket.Hex()),
 	).Scan(&name, &symbol, &suspended)
@@ -453,7 +533,6 @@ func TestHandleBasketCreated_WritesBasketAndConstituents(t *testing.T) {
 		t.Errorf("suspended: expected 0, got %d", suspended)
 	}
 
-	// Both constituent rows must exist with correct weights.
 	var constituentCount int
 	d.QueryRow(
 		`SELECT COUNT(*) FROM basket_constituents WHERE basket_address = ?`,
@@ -473,26 +552,24 @@ func TestHandleBasketCreated_WritesBasketAndConstituents(t *testing.T) {
 		t.Errorf("TSLA weight: expected 7000, got %d", tslaWeight)
 	}
 
-	// basketAddrs map must be updated.
-	idx.mu.RLock()
-	_, present := idx.basketAddrs[basket]
-	idx.mu.RUnlock()
-	if !present {
-		t.Error("basket not added to basketAddrs map after handleBasketCreated")
+	// local set must be populated immediately after writeBasketCreated.
+	if !local.baskets[basket] {
+		t.Error("basket not in chunk-local set after writeBasketCreated")
+	}
+	if _, ok := local.creatorTokens[creatorToken]; !ok {
+		t.Error("creator token not in chunk-local set after writeBasketCreated")
 	}
 }
 
-// TestHandleBasketCreated_Idempotent verifies that calling handleBasketCreated
-// twice for the same basket does not duplicate rows.
-func TestHandleBasketCreated_Idempotent(t *testing.T) {
+func TestWriteBasketCreated_Idempotent(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
 
 	insertAsset(t, d, "0xc9f9c86933092bbbfff3ccb4b105a4a94bf3bd4e", "TSLA")
 
-	basket      := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
+	basket       := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
 	creatorToken := common.HexToAddress("0x29ba5c3470b3a6c06bd6cce2e43c019d846c01c0")
-	creator     := common.HexToAddress("0x4e4b989abe79381c1b8a4871d6af481b175f4865")
+	creator      := common.HexToAddress("0x4e4b989abe79381c1b8a4871d6af481b175f4865")
 	constituents := []common.Address{common.HexToAddress("0xc9f9c86933092bbbfff3ccb4b105a4a94bf3bd4e")}
 	weights      := []*big.Int{big.NewInt(10000)}
 
@@ -504,13 +581,24 @@ func TestHandleBasketCreated_Idempotent(t *testing.T) {
 			common.BytesToHash(creatorToken.Bytes()),
 			common.BytesToHash(creator.Bytes()),
 		},
-		Data:        data,
-		BlockNumber: 100,
-		TxHash:      common.HexToHash("0xidem01"),
+		Data:    data,
+		TxHash:  common.HexToHash("0xidem01"),
+		Address: common.HexToAddress("0xE9854c4734cd4A9dbC5086398A11df3c11f40b21"),
 	}
 
-	idx.handleBasketCreated(nil, vLog)
-	idx.handleBasketCreated(nil, vLog) // second call — must not duplicate
+	for i := 0; i < 2; i++ {
+		tx, err := d.Begin()
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if err := idx.writeBasketCreated(tx, nil, vLog, newChunkAddrs()); err != nil {
+			tx.Rollback()
+			t.Fatalf("writeBasketCreated call %d: %v", i+1, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit call %d: %v", i+1, err)
+		}
+	}
 
 	var basketCount, constituentCount int
 	d.QueryRow(`SELECT COUNT(*) FROM baskets WHERE address = ?`, strings.ToLower(basket.Hex())).Scan(&basketCount)
@@ -524,19 +612,25 @@ func TestHandleBasketCreated_Idempotent(t *testing.T) {
 	}
 }
 
-// TestHandleBasketCreated_InsufficientTopics verifies that a log with fewer
-// than 4 topics is rejected without panicking or writing anything.
-func TestHandleBasketCreated_InsufficientTopics(t *testing.T) {
+func TestWriteBasketCreated_InsufficientTopics(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
 
 	vLog := types.Log{
-		Topics: []common.Hash{topicBasketCreated, {}, {}}, // only 3
-		Data:   []byte{},
+		Topics:  []common.Hash{topicBasketCreated, {}, {}},
+		Data:    []byte{},
+		Address: common.HexToAddress("0xE9854c4734cd4A9dbC5086398A11df3c11f40b21"),
 	}
 
-	// Must not panic.
-	idx.handleBasketCreated(nil, vLog)
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := idx.writeBasketCreated(tx, nil, vLog, newChunkAddrs()); err != nil {
+		tx.Rollback()
+		t.Fatalf("writeBasketCreated returned error on insufficient topics: %v", err)
+	}
+	tx.Commit()
 
 	var count int
 	d.QueryRow(`SELECT COUNT(*) FROM baskets`).Scan(&count)
@@ -564,12 +658,12 @@ func TestHandleAssetAdded_WritesAssetRow(t *testing.T) {
 
 	idx.handleAssetAdded(vLog)
 
-	var symbol, name, sector string
+	var symbol string
 	var isActive int
 	err := d.QueryRow(
-		`SELECT symbol, name, sector, is_active FROM supported_assets WHERE address = ?`,
+		`SELECT symbol, is_active FROM supported_assets WHERE address = ?`,
 		strings.ToLower(token.Hex()),
-	).Scan(&symbol, &name, &sector, &isActive)
+	).Scan(&symbol, &isActive)
 	if err != nil {
 		t.Fatalf("asset not written: %v", err)
 	}
@@ -637,14 +731,11 @@ func TestHandleBasketSuspended_SetsSuspendedFlag(t *testing.T) {
 
 // syncBaskets suspended-state propagation test
 
-// TestSyncBaskets_SuspendedBasketWrittenCorrectly verifies that a basket whose
-// active=false field in getAllBaskets is written with suspended=1.
 func TestSyncBaskets_SuspendedStateUpdate(t *testing.T) {
 	d := newTestDB(t)
 
 	basketAddr := "0x474835c4da0393bc87d4e85e36fdce3f56edeaa6"
 
-	// Insert basket as active (suspended=0), simulating a first syncBaskets run.
 	_, err := d.Exec(`
 		INSERT INTO baskets (address, creator_token_address, creator_address, name, symbol, thesis,
 		    rebalancing_enabled, created_at, created_tx, suspended)
@@ -656,7 +747,6 @@ func TestSyncBaskets_SuspendedStateUpdate(t *testing.T) {
 		t.Fatalf("initial insert: %v", err)
 	}
 
-	// Simulate a subsequent syncBaskets run where the chain reports active=false.
 	_, err = d.Exec(`
 		INSERT INTO baskets (address, creator_token_address, creator_address, name, symbol, thesis,
 		    rebalancing_enabled, created_at, created_tx, suspended)
@@ -710,9 +800,6 @@ func TestRecordSeedFailure_UpdatesLastAttempt(t *testing.T) {
 	}
 }
 
-// TestSeedMissingConstituents_SkipsBasketExceedingMaxAttempts verifies that a
-// basket with attempts >= seedMaxAttempts is excluded from the seeding query
-// and seedOneBasket is never called for it.
 func TestSeedMissingConstituents_SkipsBasketAtMaxAttempts(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -724,33 +811,23 @@ func TestSeedMissingConstituents_SkipsBasketAtMaxAttempts(t *testing.T) {
 		VALUES (?, '0x0', '0x0', '', '', '', 0, 0, '', 0)`, basketAddr); err != nil {
 		t.Fatalf("seed basket: %v", err)
 	}
-
-	// Record exactly seedMaxAttempts failures — this basket should be skipped.
 	if _, err := d.Exec(`
 		INSERT INTO basket_seed_failures (basket_address, attempts, last_attempt)
 		VALUES (?, ?, ?)`, basketAddr, seedMaxAttempts, time.Now().Unix()); err != nil {
 		t.Fatalf("seed failures: %v", err)
 	}
 
-	// seedMissingConstituents with no RPC client, if it tries to seed the
-	// basket it will call newHTTPClient which will fail to dial and log an error
-	// but not panic. The basket should be skipped entirely (zero constituent rows).
 	idx.seedMissingConstituents()
 
 	var constituentCount int
 	d.QueryRow(
 		`SELECT COUNT(*) FROM basket_constituents WHERE basket_address = ?`, basketAddr,
 	).Scan(&constituentCount)
-
-	// Constituent count must still be 0 — the basket was skipped, not attempted.
 	if constituentCount != 0 {
 		t.Errorf("expected 0 constituents (basket skipped), got %d", constituentCount)
 	}
 }
 
-// TestSeedMissingConstituents_NoOp_WhenAllSeeded verifies that
-// seedMissingConstituents returns immediately with no work when all baskets
-// already have constituents.
 func TestSeedMissingConstituents_NoOp_WhenAllSeeded(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
@@ -771,204 +848,76 @@ func TestSeedMissingConstituents_NoOp_WhenAllSeeded(t *testing.T) {
 	idx.seedMissingConstituents()
 }
 
-// filterAddresses tests
+// isKnownBasket and isKnownCreatorToken tests
 
-func TestFilterAddresses_AlwaysContainsRegistryAndFactory(t *testing.T) {
+func TestIsKnownBasket_GlobalSet(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
 
-	addrs := idx.filterAddresses()
-	if len(addrs) < 2 {
-		t.Fatalf("expected at least registry + factory, got %d addresses", len(addrs))
-	}
-
-	registry := strings.ToLower("0x19Ab3408af6503a7D4BeC255b064f8B02A345D04")
-	factory  := strings.ToLower("0xE9854c4734cd4A9dbC5086398A11df3c11f40b21")
-
-	found := make(map[string]bool)
-	for _, a := range addrs {
-		found[strings.ToLower(a.Hex())] = true
-	}
-
-	if !found[registry] {
-		t.Errorf("registry address %s not in filterAddresses result", registry)
-	}
-	if !found[factory] {
-		t.Errorf("factory address %s not in filterAddresses result", factory)
-	}
-}
-
-func TestFilterAddresses_IncludesNewlyIndexedBasket(t *testing.T) {
-	d := newTestDB(t)
-	idx := newTestIndexer(t, d)
-
-	newBasket := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
-
+	addr := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
 	idx.mu.Lock()
-	idx.basketAddrs[newBasket] = true
+	idx.basketAddrs[addr] = true
 	idx.mu.Unlock()
 
-	addrs := idx.filterAddresses()
-	found := false
-	for _, a := range addrs {
-		if strings.ToLower(a.Hex()) == strings.ToLower(newBasket.Hex()) {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("newly indexed basket not included in filterAddresses result")
+	if !idx.isKnownBasket(addr, newChunkAddrs()) {
+		t.Error("expected isKnownBasket to return true for address in global set")
 	}
 }
 
-// Migrate idempotency tests
-
-func TestMigrate_Idempotent(t *testing.T) {
-	d := newTestDB(t)
-
-	// Run once — must succeed.
-	if err := d.Migrate(); err != nil {
-		t.Fatalf("first Migrate: %v", err)
-	}
-
-	// Run again — must not error even though columns already exist.
-	if err := d.Migrate(); err != nil {
-		t.Fatalf("second Migrate (idempotent): %v", err)
-	}
-}
-
-func TestMigrate_LogIndexColumnExists(t *testing.T) {
-	d := newTestDB(t)
-
-	if err := d.Migrate(); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	// INSERT with an explicit log_index — proves the column exists after migration.
-	_, err := d.Exec(`
-		INSERT INTO deposits
-			(basket_address, investor_address, usdg_amount, basket_tokens_minted, fee_usdg, timestamp, tx_hash, log_index)
-		VALUES ('0xbasket', '0xinvestor', '1000', '990', '10', 1700000000, '0xtx01', 3)`)
-	if err != nil {
-		t.Errorf("log_index column missing after Migrate: %v", err)
-	}
-}
-
-func TestMigrate_DeduplicationConstraintEnforced(t *testing.T) {
-	d := newTestDB(t)
-
-	if err := d.Migrate(); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	// Insert a deposit.
-	_, err := d.Exec(`
-		INSERT INTO deposits
-			(basket_address, investor_address, usdg_amount, basket_tokens_minted, fee_usdg, timestamp, tx_hash, log_index)
-		VALUES ('0xbasket', '0xinvestor', '1000', '990', '10', 1700000000, '0xdup', 0)`)
-	if err != nil {
-		t.Fatalf("first insert: %v", err)
-	}
-
-	// Insert the same (tx_hash, log_index) with ON CONFLICT DO NOTHING.
-	_, err = d.Exec(`
-		INSERT INTO deposits
-			(basket_address, investor_address, usdg_amount, basket_tokens_minted, fee_usdg, timestamp, tx_hash, log_index)
-		VALUES ('0xbasket', '0xinvestor', '1000', '990', '10', 1700000000, '0xdup', 0)
-		ON CONFLICT(tx_hash, log_index) DO NOTHING`)
-	if err != nil {
-		t.Fatalf("duplicate insert with ON CONFLICT DO NOTHING: %v", err)
-	}
-
-	// Insert the same (tx_hash, log_index) without ON CONFLICT.
-	_, err = d.Exec(`
-		INSERT INTO deposits
-			(basket_address, investor_address, usdg_amount, basket_tokens_minted, fee_usdg, timestamp, tx_hash, log_index)
-		VALUES ('0xbasket', '0xinvestor', '1000', '990', '10', 1700000000, '0xdup', 0)`)
-	if err == nil {
-		t.Error("expected unique constraint error for duplicate (tx_hash, log_index), got nil")
-	}
-
-	var count int
-	d.QueryRow(`SELECT COUNT(*) FROM deposits WHERE tx_hash = '0xdup'`).Scan(&count)
-	if count != 1 {
-		t.Errorf("expected exactly 1 row after duplicate attempts, got %d", count)
-	}
-}
-
-func TestMigrate_BasketSeedFailuresTableExists(t *testing.T) {
-	d := newTestDB(t)
-
-	if err := d.Migrate(); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	_, err := d.Exec(`
-		INSERT INTO basket_seed_failures (basket_address, attempts, last_attempt)
-		VALUES ('0xbasket', 1, 1700000000)`)
-	if err != nil {
-		t.Errorf("basket_seed_failures table missing after Migrate: %v", err)
-	}
-}
-
-// blockTimestamp cache correctness
-
-// TestBlockTimestamp_CacheHit_NoPanic verifies that a pre-warmed cache entry
-// is returned without reaching the RPC path. 
-func TestBlockTimestamp_CacheHit_NoPanic(t *testing.T) {
+func TestIsKnownBasket_LocalSet(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
 
-	const blockNum = uint64(68391200)
-	const expected = int64(1780525194)
+	addr  := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
+	local := newChunkAddrs()
+	local.baskets[addr] = true
 
-	idx.blockTsMu.Lock()
-	idx.blockTs[blockNum] = uint64(expected)
-	idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: blockNum, timestamp: uint64(expected)})
-	idx.blockTsMu.Unlock()
-
-	got := idx.blockTimestamp(nil, blockNum) // nil client — must not panic
-	if got != expected {
-		t.Errorf("blockTimestamp cache hit: expected %d, got %d", expected, got)
+	if !idx.isKnownBasket(addr, local) {
+		t.Error("expected isKnownBasket to return true for address in chunk-local set")
 	}
 }
 
-// TestBlockTimestamp_CacheEviction verifies the FIFO eviction at blockTsCacheMax
-// keeps the map size bounded and evicts the oldest entry.
-func TestBlockTimestamp_CacheEviction_BoundsMapSize(t *testing.T) {
+func TestIsKnownBasket_Unknown(t *testing.T) {
 	d := newTestDB(t)
 	idx := newTestIndexer(t, d)
 
-	// Populate to exactly blockTsCacheMax.
-	for i := uint64(0); i < blockTsCacheMax; i++ {
-		idx.blockTsMu.Lock()
-		idx.blockTs[i] = i * 1000
-		idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: i, timestamp: i * 1000})
-		idx.blockTsMu.Unlock()
-	}
+	addr := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
 
-	// Trigger eviction by adding one more entry through the cache logic directly.
-	idx.blockTsMu.Lock()
-	if len(idx.blockTsFIFO) >= blockTsCacheMax {
-		oldest := idx.blockTsFIFO[0]
-		idx.blockTsFIFO = idx.blockTsFIFO[1:]
-		delete(idx.blockTs, oldest.blockNumber)
-	}
-	idx.blockTs[blockTsCacheMax] = 9999999
-	idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: blockTsCacheMax, timestamp: 9999999})
-	mapLen := len(idx.blockTs)
-	_, block0Present := idx.blockTs[0]
-	idx.blockTsMu.Unlock()
-
-	if mapLen != blockTsCacheMax {
-		t.Errorf("cache size: expected %d after eviction, got %d", blockTsCacheMax, mapLen)
-	}
-	if block0Present {
-		t.Error("block 0 (oldest) should have been evicted")
+	if idx.isKnownBasket(addr, newChunkAddrs()) {
+		t.Error("expected isKnownBasket to return false for unknown address")
 	}
 }
 
-// FeeSnapshot write test
+func TestIsKnownCreatorToken_GlobalMap(t *testing.T) {
+	d := newTestDB(t)
+	idx := newTestIndexer(t, d)
+
+	ct     := common.HexToAddress("0x29ba5c3470b3a6c06bd6cce2e43c019d846c01c0")
+	basket := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
+	idx.mu.Lock()
+	idx.creatorTokenToBasket[ct] = basket
+	idx.mu.Unlock()
+
+	if !idx.isKnownCreatorToken(ct, newChunkAddrs()) {
+		t.Error("expected isKnownCreatorToken to return true for address in global map")
+	}
+}
+
+func TestIsKnownCreatorToken_LocalMap(t *testing.T) {
+	d := newTestDB(t)
+	idx := newTestIndexer(t, d)
+
+	ct     := common.HexToAddress("0x29ba5c3470b3a6c06bd6cce2e43c019d846c01c0")
+	basket := common.HexToAddress("0x474835c4da0393bc87d4e85e36fdce3f56edeaa6")
+	local  := newChunkAddrs()
+	local.creatorTokens[ct] = basket
+
+	if !idx.isKnownCreatorToken(ct, local) {
+		t.Error("expected isKnownCreatorToken to return true for address in chunk-local map")
+	}
+}
+
+// writeFeeSnapshot test
 
 func TestWriteFeeSnapshot_WritesCorrectSnapshotID(t *testing.T) {
 	d := newTestDB(t)
@@ -987,16 +936,18 @@ func TestWriteFeeSnapshot_WritesCorrectSnapshotID(t *testing.T) {
 		t.Fatalf("seed basket: %v", err)
 	}
 
+	// Pre-populate the global map so writeFeeSnapshot resolves the basket.
+	idx.mu.Lock()
+	idx.creatorTokenToBasket[creatorTokenAddr] = basketAddr
+	idx.mu.Unlock()
+
 	snapshotID  := int64(7)
 	usdgAmount  := big.NewInt(80_000)
 	totalSupply := new(big.Int).Mul(big.NewInt(1_000_000), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
 	data, _     := feeSnapshotABI.Pack(usdgAmount, totalSupply)
 
 	vLog := types.Log{
-		Topics: []common.Hash{
-			topicFeeSnapshoted,
-			common.BigToHash(big.NewInt(snapshotID)),
-		},
+		Topics:      []common.Hash{topicFeeSnapshoted, common.BigToHash(big.NewInt(snapshotID))},
 		Data:        data,
 		BlockNumber: 300,
 		TxHash:      common.HexToHash("0xsnap01"),
@@ -1008,7 +959,7 @@ func TestWriteFeeSnapshot_WritesCorrectSnapshotID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := idx.writeFeeSnapshot(tx, nil, vLog); err != nil {
+	if err := idx.writeFeeSnapshot(tx, nil, vLog, newChunkAddrs()); err != nil {
 		tx.Rollback()
 		t.Fatalf("writeFeeSnapshot: %v", err)
 	}
@@ -1030,5 +981,56 @@ func TestWriteFeeSnapshot_WritesCorrectSnapshotID(t *testing.T) {
 	}
 	if gotAmount != "80000" {
 		t.Errorf("usdg_amount: expected 80000, got %s", gotAmount)
+	}
+}
+
+// blockTimestamp cache tests
+
+func TestBlockTimestamp_CacheHit_NoPanic(t *testing.T) {
+	d := newTestDB(t)
+	idx := newTestIndexer(t, d)
+
+	const blockNum = uint64(68391200)
+	const expected = int64(1780525194)
+
+	idx.blockTsMu.Lock()
+	idx.blockTs[blockNum] = uint64(expected)
+	idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: blockNum, timestamp: uint64(expected)})
+	idx.blockTsMu.Unlock()
+
+	got := idx.blockTimestamp(nil, blockNum)
+	if got != expected {
+		t.Errorf("blockTimestamp cache hit: expected %d, got %d", expected, got)
+	}
+}
+
+func TestBlockTimestamp_CacheEviction_BoundsMapSize(t *testing.T) {
+	d := newTestDB(t)
+	idx := newTestIndexer(t, d)
+
+	for i := uint64(0); i < blockTsCacheMax; i++ {
+		idx.blockTsMu.Lock()
+		idx.blockTs[i] = i * 1000
+		idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: i, timestamp: i * 1000})
+		idx.blockTsMu.Unlock()
+	}
+
+	idx.blockTsMu.Lock()
+	if len(idx.blockTsFIFO) >= blockTsCacheMax {
+		oldest := idx.blockTsFIFO[0]
+		idx.blockTsFIFO = idx.blockTsFIFO[1:]
+		delete(idx.blockTs, oldest.blockNumber)
+	}
+	idx.blockTs[blockTsCacheMax] = 9999999
+	idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: blockTsCacheMax, timestamp: 9999999})
+	mapLen := len(idx.blockTs)
+	_, block0Present := idx.blockTs[0]
+	idx.blockTsMu.Unlock()
+
+	if mapLen != blockTsCacheMax {
+		t.Errorf("cache size: expected %d after eviction, got %d", blockTsCacheMax, mapLen)
+	}
+	if block0Present {
+		t.Error("block 0 (oldest) should have been evicted")
 	}
 }
