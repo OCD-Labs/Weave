@@ -26,8 +26,8 @@ const rpcTimeout = 15 * time.Second
 const chunkSize = int64(2000)
 const seedMaxAttempts = 5
 const blockTsCacheMax = 4096
-const reconnectBaseDelay = 1 * time.Second
-const reconnectMaxDelay = 5 * time.Minute
+const liveChunkSize = int64(50)
+const livePollInterval = 2 * time.Second
 
 var (
 	topicBasketCreated = eventTopic("BasketCreated(address,address,address,string,string,string,address[],uint256[],bool)")
@@ -183,6 +183,7 @@ func init() {
 	}
 
 	// RevenueSnapshoted(uint256 indexed snapshotId, uint256 usdgAmount, uint256 totalSupply)
+	// snapshotId is Topics[1]; usdgAmount and totalSupply are in Data.
 	feeSnapshotABI = abi.Arguments{
 		{Name: "usdgAmount",  Type: uint256Type},
 		{Name: "totalSupply", Type: uint256Type},
@@ -212,11 +213,10 @@ func newChunkAddrs() *chunkAddrs {
 	}
 }
 
-// Indexer subscribes to new block headers via WebSocket and fetches event logs
-// per block via HTTP using a topic-only filter. Address verification is
+// Indexer polls for new blocks on a fixed interval and fetches event logs as
+// a batched range query using a topic-only filter. Address verification is
 // performed against in-memory sets populated from the DB at startup and kept
-// current as new baskets are indexed. The topic-only filter means the
-// subscription never needs to be rebuilt when new contracts are deployed.
+// current as new baskets are indexed.
 type Indexer struct {
 	ctx          context.Context
 	wsURL        string
@@ -265,45 +265,13 @@ func New(
 	}, nil
 }
 
-// Run starts the indexer. Chain state is synced before any live processing
-// begins so the address sets are fully populated.
+// Run starts the indexer. Chain state is synced first so the address sets are
+// fully populated before any event processing begins. The historical scan and
+// live poller then run sequentially on the same cursor.
 func (idx *Indexer) Run() {
 	idx.syncFromChain()
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		idx.scanHistoricalEvents()
-	}()
-
-	delay := reconnectBaseDelay
-	for {
-		select {
-		case <-idx.ctx.Done():
-			wg.Wait()
-			return
-		default:
-		}
-
-		if err := idx.subscribeBlocks(); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				wg.Wait()
-				return
-			}
-			log.Printf("indexer: block subscription error: %v — reconnecting in %s", err, delay)
-			select {
-			case <-idx.ctx.Done():
-				wg.Wait()
-				return
-			case <-time.After(delay):
-			}
-			delay = minDuration(delay*2, reconnectMaxDelay)
-		} else {
-			wg.Wait()
-			return
-		}
-	}
+	idx.scanHistoricalEvents()
+	idx.pollLiveBlocks()
 }
 
 func (idx *Indexer) syncFromChain() {
@@ -814,71 +782,85 @@ func (idx *Indexer) scanHistoricalEvents() {
 	log.Printf("indexer: historical scan complete through block %d", toBlock)
 }
 
-// subscribeBlocks subscribes to new block headers via WebSocket. For each
-// header, event logs for that block are fetched via HTTP using a topic-only
-// filter.
-func (idx *Indexer) subscribeBlocks() error {
-	dialCtx, dialCancel := context.WithTimeout(idx.ctx, rpcTimeout)
-	defer dialCancel()
-
-	wsClient, err := ethclient.DialContext(dialCtx, idx.wsURL)
+// pollLiveBlocks runs after the historical scan completes and polls for new
+// blocks on a fixed interval. Each tick fetches at most liveChunkSize blocks
+// as a single eth_getLogs call, advancing the cursor on every successful
+// write.
+func (idx *Indexer) pollLiveBlocks() {
+	client, err := idx.newHTTPClient()
 	if err != nil {
-		return fmt.Errorf("ws dial: %w", err)
+		log.Printf("indexer: pollLiveBlocks dial error: %v", err)
+		return
 	}
-	defer wsClient.Close()
+	defer client.Close()
 
-	headers := make(chan *types.Header, 16)
-	sub, err := wsClient.SubscribeNewHead(idx.ctx, headers)
-	if err != nil {
-		return fmt.Errorf("subscribe new head: %w", err)
-	}
-	defer sub.Unsubscribe()
+	log.Printf("indexer: live polling active (interval=%s, chunkSize=%d)", livePollInterval, liveChunkSize)
 
-	httpClient, err := idx.newHTTPClient()
-	if err != nil {
-		return fmt.Errorf("http dial: %w", err)
-	}
-	defer httpClient.Close()
-
-	log.Println("indexer: live block subscription active")
+	ticker := time.NewTicker(livePollInterval)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-idx.ctx.Done():
-			return nil
-
-		case err := <-sub.Err():
-			return fmt.Errorf("subscription: %w", err)
-
-		case header := <-headers:
-			blockNum := header.Number.Int64()
-
-			fetchCtx, fetchCancel := context.WithTimeout(idx.ctx, rpcTimeout)
-			logs, err := httpClient.FilterLogs(fetchCtx, ethereum.FilterQuery{
-				FromBlock: header.Number,
-				ToBlock:   header.Number,
-				Topics:    knownTopics,
-			})
-			fetchCancel()
-
-			if err != nil {
-				log.Printf("indexer: FilterLogs block %d: %v — skipping block", blockNum, err)
-				continue
-			}
-
-			if len(logs) == 0 {
-				continue
-			}
-
-			if err := idx.writeChunkAtomic(httpClient, logs, blockNum); err != nil {
-				log.Printf("indexer: writeChunkAtomic block %d: %v", blockNum, err)
+			return
+		case <-ticker.C:
+			if err := idx.pollOnce(client); err != nil {
+				log.Printf("indexer: pollOnce error: %v", err)
 			}
 		}
 	}
 }
 
+// pollOnce fetches the next batch of blocks from the cursor to the current
+// chain tip, capped at liveChunkSize, and writes any matching logs atomically.
+func (idx *Indexer) pollOnce(client *ethclient.Client) error {
+	var fromBlock int64
+	if err := idx.db.QueryRow(
+		`SELECT block_num FROM sync_cursors WHERE key = 'events'`,
+	).Scan(&fromBlock); err != nil {
+		return fmt.Errorf("read cursor: %w", err)
+	}
+
+	hctx, hcancel := context.WithTimeout(idx.ctx, rpcTimeout)
+	latestHeader, err := client.HeaderByNumber(hctx, nil)
+	hcancel()
+	if err != nil {
+		return fmt.Errorf("latest block: %w", err)
+	}
+	toBlock := latestHeader.Number.Int64()
+
+	if fromBlock >= toBlock {
+		return nil
+	}
+
+	end := fromBlock + liveChunkSize
+	if end > toBlock {
+		end = toBlock
+	}
+
+	filterCtx, filterCancel := context.WithTimeout(idx.ctx, rpcTimeout)
+	logs, err := client.FilterLogs(filterCtx, ethereum.FilterQuery{
+		FromBlock: big.NewInt(fromBlock + 1),
+		ToBlock:   big.NewInt(end),
+		Topics:    knownTopics,
+	})
+	filterCancel()
+
+	if err != nil {
+		return fmt.Errorf("FilterLogs [%d-%d]: %w", fromBlock+1, end, err)
+	}
+
+	return idx.writeChunkAtomic(client, logs, end)
+}
+
 // writeChunkAtomic writes all logs for a block or scan chunk atomically and
 // advances the event cursor to endBlock.
+//
+// BasketFactory emits Deposited before BasketCreated in the same transaction,
+// so both appear in the same block and therefore the same chunk. A pre-pass
+// processes all BasketCreated logs first and populates the chunk-local address
+// set so that Deposited events from the same transaction are correctly
+// attributed before the global sets are updated after commit.
 func (idx *Indexer) writeChunkAtomic(client *ethclient.Client, logs []types.Log, endBlock int64) error {
 	tx, err := idx.db.Begin()
 	if err != nil {
@@ -1220,7 +1202,9 @@ func (idx *Indexer) writeRebalanced(tx *sql.Tx, client *ethclient.Client, vLog t
 }
 
 // writeFeeSnapshot handles RevenueSnapshoted events emitted by CreatorToken
-// contracts. vLog.Address is the CreatorToken contract address.
+// contracts. vLog.Address is the CreatorToken contract address, not the basket
+// proxy. The basket address is resolved from creatorTokenToBasket then the
+// chunk-local map.
 func (idx *Indexer) writeFeeSnapshot(tx *sql.Tx, client *ethclient.Client, vLog types.Log, local *chunkAddrs) error {
 	if len(vLog.Topics) < 2 {
 		return nil
