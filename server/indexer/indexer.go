@@ -26,8 +26,8 @@ const rpcTimeout = 15 * time.Second
 const chunkSize = int64(2000)
 const seedMaxAttempts = 5
 const blockTsCacheMax = 4096
-const reconnectBaseDelay = 1 * time.Second
-const reconnectMaxDelay = 5 * time.Minute
+const liveChunkSize = int64(50)
+const livePollInterval = 2 * time.Second
 
 var (
 	topicBasketCreated = eventTopic("BasketCreated(address,address,address,string,string,string,address[],uint256[],bool)")
@@ -39,6 +39,20 @@ var (
 	topicAssetDeact    = eventTopic("AssetDeactivated(address)")
 	topicBasketSuspend = eventTopic("Suspended()")
 )
+
+// knownTopics is the complete set of event signatures this indexer handles.
+// Passed as the sole filter when querying logs from the node. Address
+// verification is performed in the handler against in-memory sets.
+var knownTopics = [][]common.Hash{{
+	topicBasketCreated,
+	topicDeposited,
+	topicRedeemed,
+	topicRebalanced,
+	topicFeeSnapshoted,
+	topicAssetAdded,
+	topicAssetDeact,
+	topicBasketSuspend,
+}}
 
 var (
 	depositedABI     abi.Arguments
@@ -181,7 +195,28 @@ type blockTsEntry struct {
 	timestamp   uint64
 }
 
-// Indexer subscribes to on-chain events and writes them to SQLite.
+// chunkAddrs holds basket and creator token addresses first seen within a
+// single writeChunkAtomic call. BasketFactory emits Deposited before
+// BasketCreated in the same transaction. A pre-pass over the chunk decodes
+// all BasketCreated logs and populates this set before the main write loop
+// runs, so Deposited events that precede their own BasketCreated in log order
+// are still correctly attributed.
+type chunkAddrs struct {
+	baskets       map[common.Address]bool
+	creatorTokens map[common.Address]common.Address
+}
+
+func newChunkAddrs() *chunkAddrs {
+	return &chunkAddrs{
+		baskets:       make(map[common.Address]bool),
+		creatorTokens: make(map[common.Address]common.Address),
+	}
+}
+
+// Indexer polls for new blocks on a fixed interval and fetches event logs as
+// a batched range query using a topic-only filter. Address verification is
+// performed against in-memory sets populated from the DB at startup and kept
+// current as new baskets are indexed.
 type Indexer struct {
 	ctx          context.Context
 	wsURL        string
@@ -191,14 +226,11 @@ type Indexer struct {
 	deployBlock  int64
 	db           *db.DB
 
-	// basketAddrs is the set of known basket proxy addresses for filter construction.
-	mu          sync.RWMutex
-	basketAddrs map[common.Address]bool
-
-	// creatorTokenAddrs maps each CreatorToken address → its basket address.
-	// RevenueSnapshoted is emitted by CreatorToken contracts, not basket proxies.
-	// These addresses must be included in the event filter, and the mapping lets
-	// handleFeeSnapshot store the correct basket_address in fee_snapshots.
+	// basketAddrs and creatorTokenToBasket grow with basket deployments.
+	// They are never evicted because every address represents a live contract
+	// whose events must not be dropped.
+	mu                   sync.RWMutex
+	basketAddrs          map[common.Address]bool
 	creatorTokenToBasket map[common.Address]common.Address
 
 	blockTsMu   sync.Mutex
@@ -206,7 +238,7 @@ type Indexer struct {
 	blockTsFIFO []blockTsEntry
 }
 
-// New constructs an Indexer.
+// New constructs an Indexer. Fails immediately if BASKET_FACTORY_ADDRESS is unset.
 func New(
 	ctx context.Context,
 	wsURL, rpcURL, registryAddr string,
@@ -233,44 +265,13 @@ func New(
 	}, nil
 }
 
-// Run starts the indexer.
+// Run starts the indexer. Chain state is synced first so the address sets are
+// fully populated before any event processing begins. The historical scan and
+// live poller then run sequentially on the same cursor.
 func (idx *Indexer) Run() {
 	idx.syncFromChain()
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		idx.scanTransactionalEvents()
-	}()
-
-	delay := reconnectBaseDelay
-	for {
-		select {
-		case <-idx.ctx.Done():
-			wg.Wait()
-			return
-		default:
-		}
-
-		if err := idx.subscribe(); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				wg.Wait()
-				return
-			}
-			log.Printf("indexer: subscription error: %v — reconnecting in %s", err, delay)
-			select {
-			case <-idx.ctx.Done():
-				wg.Wait()
-				return
-			case <-time.After(delay):
-			}
-			delay = minDuration(delay*2, reconnectMaxDelay)
-		} else {
-			wg.Wait()
-			return
-		}
-	}
+	idx.scanHistoricalEvents()
+	idx.pollLiveBlocks()
 }
 
 func (idx *Indexer) syncFromChain() {
@@ -284,6 +285,11 @@ func (idx *Indexer) syncFromChain() {
 	idx.syncAssets(client)
 	idx.syncBaskets(client)
 	idx.seedMissingConstituents()
+
+	idx.mu.RLock()
+	log.Printf("indexer: address sets ready — %d baskets, %d creator tokens",
+		len(idx.basketAddrs), len(idx.creatorTokenToBasket))
+	idx.mu.RUnlock()
 }
 
 func (idx *Indexer) syncAssets(client *ethclient.Client) {
@@ -397,13 +403,17 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 		return
 	}
 
-	tx, err := idx.db.Begin()
-	if err != nil {
-		log.Printf("indexer: syncBaskets begin tx: %v", err)
-		return
+	type basketEntry struct {
+		basketCommon       common.Address
+		creatorTokenCommon common.Address
+		basket             string
+		creatorToken       string
+		creator            string
+		createdAt          int64
+		suspended          int
 	}
 
-	count := 0
+	entries := make([]basketEntry, 0, rv.Len())
 
 	for i := 0; i < rv.Len(); i++ {
 		elem := rv.Index(i)
@@ -422,18 +432,31 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 			continue
 		}
 
-		basketCommon      := basketField.Interface().(common.Address)
+		basketCommon       := basketField.Interface().(common.Address)
 		creatorTokenCommon := creatorTokenField.Interface().(common.Address)
-
-		basket       := strings.ToLower(basketCommon.Hex())
-		creatorToken := strings.ToLower(creatorTokenCommon.Hex())
-		creator      := strings.ToLower(creatorField.Interface().(common.Address).Hex())
-		createdAt    := createdAtField.Interface().(*big.Int).Int64()
-		suspended    := 0
+		suspended := 0
 		if !activeField.Bool() {
 			suspended = 1
 		}
 
+		entries = append(entries, basketEntry{
+			basketCommon:       basketCommon,
+			creatorTokenCommon: creatorTokenCommon,
+			basket:             strings.ToLower(basketCommon.Hex()),
+			creatorToken:       strings.ToLower(creatorTokenCommon.Hex()),
+			creator:            strings.ToLower(creatorField.Interface().(common.Address).Hex()),
+			createdAt:          createdAtField.Interface().(*big.Int).Int64(),
+			suspended:          suspended,
+		})
+	}
+
+	tx, err := idx.db.Begin()
+	if err != nil {
+		log.Printf("indexer: syncBaskets begin tx: %v", err)
+		return
+	}
+
+	for _, e := range entries {
 		_, err := tx.Exec(`
 			INSERT INTO baskets
 				(address, creator_token_address, creator_address, name, symbol, thesis,
@@ -441,19 +464,13 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 			VALUES (?, ?, ?, '', '', '', 0, ?, '', ?)
 			ON CONFLICT(address) DO UPDATE SET
 				suspended = excluded.suspended`,
-			basket, creatorToken, creator, createdAt, suspended,
+			e.basket, e.creatorToken, e.creator, e.createdAt, e.suspended,
 		)
 		if err != nil {
 			tx.Rollback()
-			log.Printf("indexer: syncBaskets upsert %s: %v — rolling back", basket, err)
+			log.Printf("indexer: syncBaskets upsert %s: %v — rolling back", e.basket, err)
 			return
 		}
-
-		idx.mu.Lock()
-		idx.basketAddrs[basketCommon] = true
-		idx.creatorTokenToBasket[creatorTokenCommon] = basketCommon
-		idx.mu.Unlock()
-		count++
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -461,11 +478,16 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 		return
 	}
 
-	log.Printf("indexer: synced %d baskets from chain", count)
+	idx.mu.Lock()
+	for _, e := range entries {
+		idx.basketAddrs[e.basketCommon] = true
+		idx.creatorTokenToBasket[e.creatorTokenCommon] = e.basketCommon
+	}
+	idx.mu.Unlock()
+
+	log.Printf("indexer: synced %d baskets from chain", len(entries))
 }
 
-// seedMissingConstituents fills metadata and constituent rows for any basket
-// that has zero constituent rows and has not exceeded seedMaxAttempts failures.
 func (idx *Indexer) seedMissingConstituents() {
 	rows, err := idx.db.Query(`
 		SELECT b.address
@@ -500,15 +522,21 @@ func (idx *Indexer) seedMissingConstituents() {
 
 	log.Printf("indexer: seeding %d baskets", len(needsSeeding))
 
-	const workers = 5
-	work := make(chan string, len(needsSeeding))
-	for _, addr := range needsSeeding {
-		work <- addr
-	}
-	close(work)
+	work := make(chan string)
+	go func() {
+		for _, addr := range needsSeeding {
+			work <- addr
+		}
+		close(work)
+	}()
 
+	const workers = 5
 	var wg sync.WaitGroup
-	for i := 0; i < workers && i < len(needsSeeding); i++ {
+	n := workers
+	if len(needsSeeding) < n {
+		n = len(needsSeeding)
+	}
+	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -545,8 +573,6 @@ func (idx *Indexer) recordSeedFailure(basketAddr string) {
 	}
 }
 
-// seedOneBasket fetches basketState() plus name/symbol/thesis and writes all
-// constituent rows and basket metadata atomically.
 func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) error {
 	addr := common.HexToAddress(basketAddr)
 
@@ -681,12 +707,12 @@ func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) e
 	return nil
 }
 
-// scanTransactionalEvents performs a cursor-based block scan for deposits,
-// redemptions, rebalances, and fee snapshots.
-func (idx *Indexer) scanTransactionalEvents() {
+// scanHistoricalEvents replays all blocks from the stored cursor to chain tip
+// using chunked eth_getLogs calls filtered by topic only.
+func (idx *Indexer) scanHistoricalEvents() {
 	client, err := idx.newHTTPClient()
 	if err != nil {
-		log.Printf("indexer: scanTransactionalEvents dial error: %v", err)
+		log.Printf("indexer: scanHistoricalEvents dial error: %v", err)
 		return
 	}
 	defer client.Close()
@@ -700,7 +726,7 @@ func (idx *Indexer) scanTransactionalEvents() {
 		if _, err := idx.db.Exec(
 			`INSERT INTO sync_cursors (key, block_num) VALUES ('events', ?)`, fromBlock,
 		); err != nil {
-			log.Printf("indexer: scanTransactionalEvents: failed to initialise cursor: %v", err)
+			log.Printf("indexer: scanHistoricalEvents: failed to initialise cursor: %v", err)
 			return
 		}
 	}
@@ -709,7 +735,7 @@ func (idx *Indexer) scanTransactionalEvents() {
 	latestHeader, err := client.HeaderByNumber(hctx, nil)
 	hcancel()
 	if err != nil {
-		log.Printf("indexer: scanTransactionalEvents latest block error: %v", err)
+		log.Printf("indexer: scanHistoricalEvents latest block error: %v", err)
 		return
 	}
 	toBlock := latestHeader.Number.Int64()
@@ -719,14 +745,12 @@ func (idx *Indexer) scanTransactionalEvents() {
 		return
 	}
 
-	log.Printf("indexer: scanning transactional events blocks %d → %d", fromBlock, toBlock)
-
-	addresses := idx.filterAddresses()
+	log.Printf("indexer: scanning historical events blocks %d → %d", fromBlock, toBlock)
 
 	for start := fromBlock; start <= toBlock; start += chunkSize {
 		select {
 		case <-idx.ctx.Done():
-			log.Printf("indexer: scan interrupted at block %d by context cancellation", start)
+			log.Printf("indexer: historical scan interrupted at block %d", start)
 			return
 		default:
 		}
@@ -740,14 +764,7 @@ func (idx *Indexer) scanTransactionalEvents() {
 		logs, err := client.FilterLogs(filterCtx, ethereum.FilterQuery{
 			FromBlock: big.NewInt(start),
 			ToBlock:   big.NewInt(end),
-			Addresses: addresses,
-			Topics: [][]common.Hash{{
-				topicBasketCreated,
-				topicDeposited,
-				topicRedeemed,
-				topicRebalanced,
-				topicFeeSnapshoted,
-			}},
+			Topics:    knownTopics,
 		})
 		filterCancel()
 
@@ -762,35 +779,125 @@ func (idx *Indexer) scanTransactionalEvents() {
 		}
 	}
 
-	log.Printf("indexer: transactional event scan complete through block %d", toBlock)
+	log.Printf("indexer: historical scan complete through block %d", toBlock)
 }
 
-// writeChunkAtomic writes all logs for a scan chunk and advances the cursor
-// in a single SQLite transaction.
+// pollLiveBlocks runs after the historical scan completes and polls for new
+// blocks on a fixed interval. Each tick fetches at most liveChunkSize blocks
+// as a single eth_getLogs call, advancing the cursor on every successful
+// write.
+func (idx *Indexer) pollLiveBlocks() {
+	client, err := idx.newHTTPClient()
+	if err != nil {
+		log.Printf("indexer: pollLiveBlocks dial error: %v", err)
+		return
+	}
+	defer client.Close()
+
+	log.Printf("indexer: live polling active (interval=%s, chunkSize=%d)", livePollInterval, liveChunkSize)
+
+	ticker := time.NewTicker(livePollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-idx.ctx.Done():
+			return
+		case <-ticker.C:
+			if err := idx.pollOnce(client); err != nil {
+				log.Printf("indexer: pollOnce error: %v", err)
+			}
+		}
+	}
+}
+
+// pollOnce fetches the next batch of blocks from the cursor to the current
+// chain tip, capped at liveChunkSize, and writes any matching logs atomically.
+func (idx *Indexer) pollOnce(client *ethclient.Client) error {
+	var fromBlock int64
+	if err := idx.db.QueryRow(
+		`SELECT block_num FROM sync_cursors WHERE key = 'events'`,
+	).Scan(&fromBlock); err != nil {
+		return fmt.Errorf("read cursor: %w", err)
+	}
+
+	var latestHeader *types.Header
+	if err := retryRPC(idx.ctx, 3, time.Second, func() error {
+		hctx, hcancel := context.WithTimeout(idx.ctx, rpcTimeout)
+		defer hcancel()
+		var rerr error
+		latestHeader, rerr = client.HeaderByNumber(hctx, nil)
+		return rerr
+	}); err != nil {
+		return fmt.Errorf("latest block: %w", err)
+	}
+
+	toBlock := latestHeader.Number.Int64()
+	if fromBlock >= toBlock {
+		return nil
+	}
+
+	end := fromBlock + liveChunkSize
+	if end > toBlock {
+		end = toBlock
+	}
+
+	var logs []types.Log
+	if err := retryRPC(idx.ctx, 3, time.Second, func() error {
+		filterCtx, filterCancel := context.WithTimeout(idx.ctx, rpcTimeout)
+		defer filterCancel()
+		var rerr error
+		logs, rerr = client.FilterLogs(filterCtx, ethereum.FilterQuery{
+			FromBlock: big.NewInt(fromBlock + 1),
+			ToBlock:   big.NewInt(end),
+			Topics:    knownTopics,
+		})
+		return rerr
+	}); err != nil {
+		return fmt.Errorf("FilterLogs [%d-%d]: %w", fromBlock+1, end, err)
+	}
+
+	return idx.writeChunkAtomic(client, logs, end)
+}
+
+// writeChunkAtomic writes all logs for a block or scan chunk atomically and
+// advances the event cursor to endBlock.
+//
+// BasketFactory emits Deposited before BasketCreated in the same transaction,
+// so both appear in the same block and therefore the same chunk. A pre-pass
+// processes all BasketCreated logs first and populates the chunk-local address
+// set so that Deposited events from the same transaction are correctly
+// attributed before the global sets are updated after commit.
 func (idx *Indexer) writeChunkAtomic(client *ethclient.Client, logs []types.Log, endBlock int64) error {
 	tx, err := idx.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin chunk tx: %w", err)
 	}
 
+	local := newChunkAddrs()
+
+	// Pre-pass: decode all BasketCreated logs and write basket rows first.
+	// This populates the local address set before the main loop processes
+	// Deposited and RevenueSnapshoted events from the same transactions.
 	for _, vLog := range logs {
-		if len(vLog.Topics) == 0 {
+		if len(vLog.Topics) == 0 || vLog.Topics[0] != topicBasketCreated {
 			continue
 		}
-
-		if vLog.Topics[0] == topicBasketCreated {
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("pre-basket commit: %w", err)
-			}
-			idx.handleBasketCreated(client, vLog)
-			tx, err = idx.db.Begin()
-			if err != nil {
-				return fmt.Errorf("post-basket begin tx: %w", err)
-			}
+		if vLog.Address != idx.factoryAddr {
 			continue
 		}
+		if err := idx.writeBasketCreated(tx, client, vLog, local); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("writeBasketCreated tx=%s: %w", vLog.TxHash.Hex(), err)
+		}
+	}
 
-		if err := idx.writeLog(tx, client, vLog); err != nil {
+	// Main pass: process all non-BasketCreated logs in emission order.
+	for _, vLog := range logs {
+		if len(vLog.Topics) == 0 || vLog.Topics[0] == topicBasketCreated {
+			continue
+		}
+		if err := idx.writeLog(tx, client, vLog, local); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("write log tx=%s idx=%d: %w", vLog.TxHash.Hex(), vLog.Index, err)
 		}
@@ -803,116 +910,112 @@ func (idx *Indexer) writeChunkAtomic(client *ethclient.Client, logs []types.Log,
 		return fmt.Errorf("advance cursor to %d: %w", endBlock, err)
 	}
 
-	return tx.Commit()
-}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 
-// writeLog routes a single log to the appropriate write function within an
-// open transaction.
-func (idx *Indexer) writeLog(tx *sql.Tx, client *ethclient.Client, vLog types.Log) error {
-	if len(vLog.Topics) == 0 {
-		return nil
+	// Merge chunk-local sets into global sets after commit.
+	idx.mu.Lock()
+	for addr := range local.baskets {
+		idx.basketAddrs[addr] = true
 	}
-	switch vLog.Topics[0] {
-	case topicDeposited:
-		return idx.writeDeposited(tx, client, vLog)
-	case topicRedeemed:
-		return idx.writeRedeemed(tx, client, vLog)
-	case topicRebalanced:
-		return idx.writeRebalanced(tx, client, vLog)
-	case topicFeeSnapshoted:
-		return idx.writeFeeSnapshot(tx, client, vLog)
+	for ct, basket := range local.creatorTokens {
+		idx.creatorTokenToBasket[ct] = basket
 	}
+	idx.mu.Unlock()
+
 	return nil
 }
 
-// handleLog is used by the live subscription. Each event type gets its own
-// transaction.
-func (idx *Indexer) handleLog(client *ethclient.Client, vLog types.Log) {
+// writeLog routes a single non-BasketCreated log to its handler after
+// verifying the emitting address belongs to this protocol.
+func (idx *Indexer) writeLog(tx *sql.Tx, client *ethclient.Client, vLog types.Log, local *chunkAddrs) error {
 	if len(vLog.Topics) == 0 {
-		return
+		return nil
 	}
-	switch vLog.Topics[0] {
-	case topicBasketCreated:
-		idx.handleBasketCreated(client, vLog)
 
-	case topicDeposited:
-		tx, err := idx.db.Begin()
-		if err != nil {
-			log.Printf("indexer: live Deposited begin tx: %v", err)
-			return
-		}
-		if err := idx.writeDeposited(tx, client, vLog); err != nil {
-			tx.Rollback()
-			log.Printf("indexer: live writeDeposited: %v", err)
-			return
-		}
-		if err := tx.Commit(); err != nil {
-			log.Printf("indexer: live Deposited commit: %v", err)
-		}
+	topic := vLog.Topics[0]
 
-	case topicRedeemed:
-		tx, err := idx.db.Begin()
-		if err != nil {
-			log.Printf("indexer: live Redeemed begin tx: %v", err)
-			return
+	if topic == topicAssetAdded || topic == topicAssetDeact {
+		if vLog.Address != idx.registryAddr {
+			return nil
 		}
-		if err := idx.writeRedeemed(tx, client, vLog); err != nil {
-			tx.Rollback()
-			log.Printf("indexer: live writeRedeemed: %v", err)
-			return
+		if topic == topicAssetAdded {
+			idx.handleAssetAdded(vLog)
+		} else {
+			idx.handleAssetDeactivated(vLog)
 		}
-		if err := tx.Commit(); err != nil {
-			log.Printf("indexer: live Redeemed commit: %v", err)
-		}
+		return nil
+	}
 
-	case topicRebalanced:
-		tx, err := idx.db.Begin()
-		if err != nil {
-			log.Printf("indexer: live Rebalanced begin tx: %v", err)
-			return
+	if topic == topicBasketSuspend {
+		if !idx.isKnownBasket(vLog.Address, local) {
+			return nil
 		}
-		if err := idx.writeRebalanced(tx, client, vLog); err != nil {
-			tx.Rollback()
-			log.Printf("indexer: live writeRebalanced: %v", err)
-			return
-		}
-		if err := tx.Commit(); err != nil {
-			log.Printf("indexer: live Rebalanced commit: %v", err)
-		}
-
-	case topicFeeSnapshoted:
-		tx, err := idx.db.Begin()
-		if err != nil {
-			log.Printf("indexer: live FeeSnapshot begin tx: %v", err)
-			return
-		}
-		if err := idx.writeFeeSnapshot(tx, client, vLog); err != nil {
-			tx.Rollback()
-			log.Printf("indexer: live writeFeeSnapshot: %v", err)
-			return
-		}
-		if err := tx.Commit(); err != nil {
-			log.Printf("indexer: live FeeSnapshot commit: %v", err)
-		}
-
-	case topicAssetAdded:
-		idx.handleAssetAdded(vLog)
-
-	case topicAssetDeact:
-		idx.handleAssetDeactivated(vLog)
-
-	case topicBasketSuspend:
 		idx.handleBasketSuspended(vLog)
+		return nil
 	}
+
+	if topic == topicDeposited || topic == topicRedeemed || topic == topicRebalanced {
+		if !idx.isKnownBasket(vLog.Address, local) {
+			return nil
+		}
+		switch topic {
+		case topicDeposited:
+			return idx.writeDeposited(tx, client, vLog)
+		case topicRedeemed:
+			return idx.writeRedeemed(tx, client, vLog)
+		case topicRebalanced:
+			return idx.writeRebalanced(tx, client, vLog)
+		}
+	}
+
+	if topic == topicFeeSnapshoted {
+		if !idx.isKnownCreatorToken(vLog.Address, local) {
+			return nil
+		}
+		return idx.writeFeeSnapshot(tx, client, vLog, local)
+	}
+
+	return nil
 }
 
-func (idx *Indexer) handleBasketCreated(client *ethclient.Client, vLog types.Log) {
+// isKnownBasket returns true if addr is a known basket proxy, checking the
+// global set then the chunk-local set.
+func (idx *Indexer) isKnownBasket(addr common.Address, local *chunkAddrs) bool {
+	idx.mu.RLock()
+	known := idx.basketAddrs[addr]
+	idx.mu.RUnlock()
+	if known {
+		return true
+	}
+	return local.baskets[addr]
+}
+
+// isKnownCreatorToken returns true if addr is a known creator token contract,
+// checking the global map then the chunk-local map.
+func (idx *Indexer) isKnownCreatorToken(addr common.Address, local *chunkAddrs) bool {
+	idx.mu.RLock()
+	_, known := idx.creatorTokenToBasket[addr]
+	idx.mu.RUnlock()
+	if known {
+		return true
+	}
+	_, localKnown := local.creatorTokens[addr]
+	return localKnown
+}
+
+// writeBasketCreated writes the basket and constituent rows within the provided
+// transaction and registers the new addresses in the chunk-local set immediately
+// so subsequent logs in the same chunk that reference this basket are correctly
+// handled before the global sets are updated after commit.
+func (idx *Indexer) writeBasketCreated(tx *sql.Tx, client *ethclient.Client, vLog types.Log, local *chunkAddrs) error {
 	if len(vLog.Topics) < 4 {
-		log.Printf("indexer: handleBasketCreated: expected 4 topics, got %d — tx=%s", len(vLog.Topics), vLog.TxHash.Hex())
-		return
+		log.Printf("indexer: writeBasketCreated: expected 4 topics, got %d — tx=%s", len(vLog.Topics), vLog.TxHash.Hex())
+		return nil
 	}
 
-	basketCommon      := common.HexToAddress(vLog.Topics[1].Hex())
+	basketCommon       := common.HexToAddress(vLog.Topics[1].Hex())
 	creatorTokenCommon := common.HexToAddress(vLog.Topics[2].Hex())
 	basket             := strings.ToLower(basketCommon.Hex())
 	creatorToken       := strings.ToLower(creatorTokenCommon.Hex())
@@ -920,8 +1023,8 @@ func (idx *Indexer) handleBasketCreated(client *ethclient.Client, vLog types.Log
 
 	decoded, err := basketCreatedABI.Unpack(vLog.Data)
 	if err != nil || len(decoded) < 6 {
-		log.Printf("indexer: handleBasketCreated decode error tx=%s: %v", vLog.TxHash.Hex(), err)
-		return
+		log.Printf("indexer: writeBasketCreated decode error tx=%s: %v", vLog.TxHash.Hex(), err)
+		return nil
 	}
 
 	name, _          := decoded[0].(string)
@@ -944,7 +1047,7 @@ func (idx *Indexer) handleBasketCreated(client *ethclient.Client, vLog types.Log
 			`SELECT symbol FROM supported_assets WHERE address = ?`, cAddr,
 		).Scan(&cSymbol)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			log.Printf("indexer: handleBasketCreated symbol lookup %s: %v", cAddr, err)
+			log.Printf("indexer: writeBasketCreated symbol lookup %s: %v", cAddr, err)
 		}
 		weight := int64(0)
 		if i < len(targetWeights) && targetWeights[i] != nil {
@@ -954,12 +1057,6 @@ func (idx *Indexer) handleBasketCreated(client *ethclient.Client, vLog types.Log
 	}
 
 	createdAt := idx.blockTimestamp(client, vLog.BlockNumber)
-
-	tx, err := idx.db.Begin()
-	if err != nil {
-		log.Printf("indexer: handleBasketCreated begin tx: %v", err)
-		return
-	}
 
 	_, err = tx.Exec(`
 		INSERT INTO baskets
@@ -975,9 +1072,7 @@ func (idx *Indexer) handleBasketCreated(client *ethclient.Client, vLog types.Log
 		boolToInt(rebalancing), createdAt, vLog.TxHash.Hex(),
 	)
 	if err != nil {
-		tx.Rollback()
-		log.Printf("indexer: handleBasketCreated insert basket: %v", err)
-		return
+		return fmt.Errorf("insert basket %s: %w", basket, err)
 	}
 
 	for i, row := range cRows {
@@ -989,23 +1084,15 @@ func (idx *Indexer) handleBasketCreated(client *ethclient.Client, vLog types.Log
 			basket, row.addr, row.symbol, row.weight, i,
 		)
 		if err != nil {
-			tx.Rollback()
-			log.Printf("indexer: handleBasketCreated insert constituent %s: %v", row.addr, err)
-			return
+			return fmt.Errorf("insert constituent %s for basket %s: %w", row.addr, basket, err)
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		log.Printf("indexer: handleBasketCreated commit: %v", err)
-		return
-	}
+	local.baskets[basketCommon] = true
+	local.creatorTokens[creatorTokenCommon] = basketCommon
 
-	idx.mu.Lock()
-	idx.basketAddrs[basketCommon] = true
-	idx.creatorTokenToBasket[creatorTokenCommon] = basketCommon
-	idx.mu.Unlock()
-
-	log.Printf("indexer: basket %s indexed with %d constituents (creatorToken=%s)", basket, len(cRows), creatorToken)
+	log.Printf("indexer: basket %s written with %d constituents (creatorToken=%s)", basket, len(cRows), creatorToken)
+	return nil
 }
 
 func (idx *Indexer) handleAssetAdded(vLog types.Log) {
@@ -1121,40 +1208,32 @@ func (idx *Indexer) writeRebalanced(tx *sql.Tx, client *ethclient.Client, vLog t
 	return err
 }
 
-// writeFeeSnapshot handles RevenueSnapshoted events emitted by CreatorToken contracts.
-func (idx *Indexer) writeFeeSnapshot(tx *sql.Tx, client *ethclient.Client, vLog types.Log) error {
+// writeFeeSnapshot handles RevenueSnapshoted events emitted by CreatorToken
+// contracts. vLog.Address is the CreatorToken contract address, not the basket
+// proxy. The basket address is resolved from creatorTokenToBasket then the
+// chunk-local map.
+func (idx *Indexer) writeFeeSnapshot(tx *sql.Tx, client *ethclient.Client, vLog types.Log, local *chunkAddrs) error {
 	if len(vLog.Topics) < 2 {
 		return nil
 	}
 
-	creatorTokenAddr := strings.ToLower(vLog.Address.Hex())
 	creatorTokenCommon := vLog.Address
 
 	idx.mu.RLock()
 	basketCommon, found := idx.creatorTokenToBasket[creatorTokenCommon]
 	idx.mu.RUnlock()
 
-	var basketAddr string
-	if found {
-		basketAddr = strings.ToLower(basketCommon.Hex())
-	} else {
-		err := idx.db.QueryRow(
-			`SELECT address FROM baskets WHERE creator_token_address = ?`,
-			creatorTokenAddr,
-		).Scan(&basketAddr)
-		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("indexer: writeFeeSnapshot: no basket found for creatorToken %s — skipping", creatorTokenAddr)
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("writeFeeSnapshot basket lookup for creatorToken %s: %w", creatorTokenAddr, err)
-		}
-		// Populate the in-memory map so subsequent events don't hit the DB.
-		idx.mu.Lock()
-		idx.creatorTokenToBasket[creatorTokenCommon] = common.HexToAddress(basketAddr)
-		idx.mu.Unlock()
+	if !found {
+		basketCommon, found = local.creatorTokens[creatorTokenCommon]
 	}
 
+	if !found {
+		log.Printf("indexer: writeFeeSnapshot: no basket for creatorToken %s — skipping",
+			strings.ToLower(creatorTokenCommon.Hex()))
+		return nil
+	}
+
+	basketAddr := strings.ToLower(basketCommon.Hex())
 	snapshotID := new(big.Int).SetBytes(vLog.Topics[1].Bytes()).Int64()
 
 	decoded, err := feeSnapshotABI.Unpack(vLog.Data)
@@ -1195,15 +1274,15 @@ func (idx *Indexer) handleBasketSuspended(vLog types.Log) {
 	}
 }
 
-// blockTimestamp returns the Unix timestamp for a block number from a bounded
-// FIFO cache, fetching via RPC on a miss.
+// blockTimestamp returns the Unix timestamp for a block from a bounded FIFO
+// cache, fetching via RPC on a miss.
 func (idx *Indexer) blockTimestamp(client *ethclient.Client, blockNumber uint64) int64 {
 	idx.blockTsMu.Lock()
-	if ts, ok := idx.blockTs[blockNumber]; ok {
-		idx.blockTsMu.Unlock()
+	ts, ok := idx.blockTs[blockNumber]
+	idx.blockTsMu.Unlock()
+	if ok {
 		return int64(ts)
 	}
-	idx.blockTsMu.Unlock()
 
 	if client == nil {
 		log.Printf("indexer: blockTimestamp(%d): nil client — storing 0", blockNumber)
@@ -1219,7 +1298,7 @@ func (idx *Indexer) blockTimestamp(client *ethclient.Client, blockNumber uint64)
 		return 0
 	}
 
-	ts := header.Time
+	fetched := header.Time
 
 	idx.blockTsMu.Lock()
 	defer idx.blockTsMu.Unlock()
@@ -1229,70 +1308,10 @@ func (idx *Indexer) blockTimestamp(client *ethclient.Client, blockNumber uint64)
 		idx.blockTsFIFO = idx.blockTsFIFO[1:]
 		delete(idx.blockTs, oldest.blockNumber)
 	}
+	idx.blockTs[blockNumber] = fetched
+	idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: blockNumber, timestamp: fetched})
 
-	idx.blockTs[blockNumber] = ts
-	idx.blockTsFIFO = append(idx.blockTsFIFO, blockTsEntry{blockNumber: blockNumber, timestamp: ts})
-
-	return int64(ts)
-}
-
-// subscribe opens a WebSocket connection and processes live events until
-// ctx is cancelled or the connection drops.
-func (idx *Indexer) subscribe() error {
-	dialCtx, dialCancel := context.WithTimeout(idx.ctx, rpcTimeout)
-	defer dialCancel()
-
-	client, err := ethclient.DialContext(dialCtx, idx.wsURL)
-	if err != nil {
-		return fmt.Errorf("dial: %w", err)
-	}
-	defer client.Close()
-
-	query := ethereum.FilterQuery{Addresses: idx.filterAddresses()}
-
-	logs := make(chan types.Log, 512)
-	sub, err := client.SubscribeFilterLogs(idx.ctx, query, logs)
-	if err != nil {
-		return fmt.Errorf("subscribe: %w", err)
-	}
-	defer sub.Unsubscribe()
-
-	// Drain the log channel in a separate goroutine.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for vLog := range logs {
-			idx.handleLog(client, vLog)
-		}
-	}()
-
-	log.Println("indexer: live subscription active")
-
-	select {
-	case <-idx.ctx.Done():
-		return nil
-	case err := <-sub.Err():
-		return fmt.Errorf("subscription: %w", err)
-	}
-}
-
-// filterAddresses returns all addresses to include in FilterQuery:
-// registry, factory, all known basket proxies, and all known creator token contracts.
-func (idx *Indexer) filterAddresses() []common.Address {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
-	addresses := make([]common.Address, 0, len(idx.basketAddrs)+len(idx.creatorTokenToBasket)+2)
-	addresses = append(addresses, idx.registryAddr)
-	addresses = append(addresses, idx.factoryAddr)
-	for addr := range idx.basketAddrs {
-		addresses = append(addresses, addr)
-	}
-	// Include all known creator token addresses so RevenueSnapshoted events are received.
-	for creatorToken := range idx.creatorTokenToBasket {
-		addresses = append(addresses, creatorToken)
-	}
-	return addresses
+	return int64(fetched)
 }
 
 func (idx *Indexer) newHTTPClient() (*ethclient.Client, error) {
@@ -1312,7 +1331,6 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// minDuration returns the smaller of two durations.
 func minDuration(a, b time.Duration) time.Duration {
 	if a < b {
 		return a
@@ -1320,7 +1338,26 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-// getEnv returns the environment variable value or a fallback.
+func retryRPC(ctx context.Context, attempts int, base time.Duration, fn func() error) error {
+	var err error
+	for i := range attempts {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		delay := base * (1 << i)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return err
+}
+
 func getEnv(key, fallback string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v

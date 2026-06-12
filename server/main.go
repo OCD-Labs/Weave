@@ -40,11 +40,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err = database.Migrate()
-	if err != nil {
-		log.Fatalf("failed to migrate database: %v", err)
-	}
-
 	idx, err := indexer.New(ctx, wsURL, rpcURL, registryAddr, deployBlock, database)
 	if err != nil {
 		log.Fatalf("failed to start indexer: %v", err)
