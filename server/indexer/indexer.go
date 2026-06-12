@@ -821,14 +821,18 @@ func (idx *Indexer) pollOnce(client *ethclient.Client) error {
 		return fmt.Errorf("read cursor: %w", err)
 	}
 
-	hctx, hcancel := context.WithTimeout(idx.ctx, rpcTimeout)
-	latestHeader, err := client.HeaderByNumber(hctx, nil)
-	hcancel()
-	if err != nil {
+	var latestHeader *types.Header
+	if err := retryRPC(idx.ctx, 3, time.Second, func() error {
+		hctx, hcancel := context.WithTimeout(idx.ctx, rpcTimeout)
+		defer hcancel()
+		var rerr error
+		latestHeader, rerr = client.HeaderByNumber(hctx, nil)
+		return rerr
+	}); err != nil {
 		return fmt.Errorf("latest block: %w", err)
 	}
-	toBlock := latestHeader.Number.Int64()
 
+	toBlock := latestHeader.Number.Int64()
 	if fromBlock >= toBlock {
 		return nil
 	}
@@ -838,15 +842,18 @@ func (idx *Indexer) pollOnce(client *ethclient.Client) error {
 		end = toBlock
 	}
 
-	filterCtx, filterCancel := context.WithTimeout(idx.ctx, rpcTimeout)
-	logs, err := client.FilterLogs(filterCtx, ethereum.FilterQuery{
-		FromBlock: big.NewInt(fromBlock + 1),
-		ToBlock:   big.NewInt(end),
-		Topics:    knownTopics,
-	})
-	filterCancel()
-
-	if err != nil {
+	var logs []types.Log
+	if err := retryRPC(idx.ctx, 3, time.Second, func() error {
+		filterCtx, filterCancel := context.WithTimeout(idx.ctx, rpcTimeout)
+		defer filterCancel()
+		var rerr error
+		logs, rerr = client.FilterLogs(filterCtx, ethereum.FilterQuery{
+			FromBlock: big.NewInt(fromBlock + 1),
+			ToBlock:   big.NewInt(end),
+			Topics:    knownTopics,
+		})
+		return rerr
+	}); err != nil {
 		return fmt.Errorf("FilterLogs [%d-%d]: %w", fromBlock+1, end, err)
 	}
 
@@ -1329,6 +1336,26 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func retryRPC(ctx context.Context, attempts int, base time.Duration, fn func() error) error {
+	var err error
+	for i := range attempts {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		delay := base * (1 << i)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return err
 }
 
 func getEnv(key, fallback string) string {

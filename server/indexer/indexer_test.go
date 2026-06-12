@@ -1,7 +1,9 @@
 package indexer
 
 import (
+	"context"
 	"encoding/hex"
+	"fmt"
 	"math/big"
 	"os"
 	"strings"
@@ -773,4 +775,65 @@ func FuzzDecodeBigIntFromLogData(f *testing.F) {
 		new(big.Int).SetBytes(data[32:64])
 		new(big.Int).SetBytes(data[64:96])
 	})
+}
+
+func TestRetryRPC_SucceedsOnFirstAttempt(t *testing.T) {
+	calls := 0
+	err := retryRPC(context.Background(), 3, time.Millisecond, func() error {
+		calls++
+		return nil
+	})
+	if err != nil {
+		t.Errorf("expected nil error, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 call, got %d", calls)
+	}
+}
+
+func TestRetryRPC_RetriesOnTransientError(t *testing.T) {
+	calls := 0
+	err := retryRPC(context.Background(), 3, time.Millisecond, func() error {
+		calls++
+		if calls < 3 {
+			return fmt.Errorf("transient error")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("expected nil after retries, got %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 calls, got %d", calls)
+	}
+}
+
+func TestRetryRPC_StopsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calls := 0
+	err := retryRPC(ctx, 3, time.Millisecond, func() error {
+		calls++
+		return fmt.Errorf("some error")
+	})
+	if err == nil {
+		t.Error("expected error on cancelled context")
+	}
+	if calls > 1 {
+		t.Errorf("expected at most 1 call with cancelled context, got %d", calls)
+	}
+}
+
+func TestRetryRPC_ExhaustsAttemptsAndReturnsLastError(t *testing.T) {
+	calls := 0
+	err := retryRPC(context.Background(), 3, time.Millisecond, func() error {
+		calls++
+		return fmt.Errorf("persistent error %d", calls)
+	})
+	if err == nil {
+		t.Error("expected error after exhausting attempts")
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 calls, got %d", calls)
+	}
 }
