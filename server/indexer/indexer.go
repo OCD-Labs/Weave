@@ -30,14 +30,15 @@ const liveChunkSize = int64(50)
 const livePollInterval = 2 * time.Second
 
 var (
-	topicBasketCreated = eventTopic("BasketCreated(address,address,address,string,string,string,address[],uint256[],bool)")
-	topicDeposited     = eventTopic("Deposited(address,uint256,uint256,uint256)")
-	topicRedeemed      = eventTopic("Redeemed(address,uint256,uint256,uint256)")
-	topicRebalanced    = eventTopic("Rebalanced(address)")
-	topicFeeSnapshoted = eventTopic("RevenueSnapshoted(uint256,uint256,uint256)")
-	topicAssetAdded    = eventTopic("AssetAdded(address,string,string,string,address)")
-	topicAssetDeact    = eventTopic("AssetDeactivated(address)")
-	topicBasketSuspend = eventTopic("Suspended()")
+	topicBasketCreated  = eventTopic("BasketCreated(address,address,address,string,string,string,address[],uint256[],bool)")
+	topicDeposited      = eventTopic("Deposited(address,uint256,uint256,uint256)")
+	topicRedeemed       = eventTopic("Redeemed(address,uint256,uint256,uint256)")
+	topicRebalanced     = eventTopic("Rebalanced(address)")
+	topicFeeSnapshoted  = eventTopic("RevenueSnapshoted(uint256,uint256,uint256)")
+	topicAssetAdded     = eventTopic("AssetAdded(address,string,string,string,address)")
+	topicAssetDeact     = eventTopic("AssetDeactivated(address)")
+	topicBasketSuspend  = eventTopic("Suspended()")
+	topicRevenueClaimed = eventTopic("RevenueClaimed(address,uint256,uint256)")
 )
 
 // knownTopics is the complete set of event signatures this indexer handles.
@@ -52,19 +53,21 @@ var knownTopics = [][]common.Hash{{
 	topicAssetAdded,
 	topicAssetDeact,
 	topicBasketSuspend,
+	topicRevenueClaimed,
 }}
 
 var (
-	depositedABI     abi.Arguments
-	redeemedABI      abi.Arguments
-	feeSnapshotABI   abi.Arguments
-	basketCreatedABI abi.Arguments
-	assetAddedABI    abi.Arguments
+	depositedABI      abi.Arguments
+	redeemedABI       abi.Arguments
+	feeSnapshotABI    abi.Arguments
+	basketCreatedABI  abi.Arguments
+	assetAddedABI     abi.Arguments
+	revenueClaimedABI abi.Arguments
 )
 
 var (
 	getSupportedAssetsABI abi.ABI
-	getAllBasketsABI       abi.ABI
+	getAllBasketsABI      abi.ABI
 	basketStateABI        abi.ABI
 	basketMetaABI         abi.ABI
 )
@@ -147,46 +150,50 @@ func init() {
 		panic(fmt.Sprintf("indexer: parse basketMetaABI: %v", err))
 	}
 
-	addrType, _     := abi.NewType("address", "", nil)
-	stringType, _   := abi.NewType("string", "", nil)
-	boolType, _     := abi.NewType("bool", "", nil)
-	uint256Type, _  := abi.NewType("uint256", "", nil)
-	addrSlice, _    := abi.NewType("address[]", "", nil)
+	addrType, _ := abi.NewType("address", "", nil)
+	stringType, _ := abi.NewType("string", "", nil)
+	boolType, _ := abi.NewType("bool", "", nil)
+	uint256Type, _ := abi.NewType("uint256", "", nil)
+	addrSlice, _ := abi.NewType("address[]", "", nil)
 	uint256Slice, _ := abi.NewType("uint256[]", "", nil)
 
 	basketCreatedABI = abi.Arguments{
-		{Name: "name",               Type: stringType},
-		{Name: "symbol",             Type: stringType},
-		{Name: "thesis",             Type: stringType},
-		{Name: "constituents",       Type: addrSlice},
-		{Name: "targetWeightsBps",   Type: uint256Slice},
+		{Name: "name", Type: stringType},
+		{Name: "symbol", Type: stringType},
+		{Name: "thesis", Type: stringType},
+		{Name: "constituents", Type: addrSlice},
+		{Name: "targetWeightsBps", Type: uint256Slice},
 		{Name: "rebalancingEnabled", Type: boolType},
 	}
 
 	assetAddedABI = abi.Arguments{
 		{Name: "symbol", Type: stringType},
-		{Name: "name",   Type: stringType},
+		{Name: "name", Type: stringType},
 		{Name: "sector", Type: stringType},
 		{Name: "oracle", Type: addrType},
 	}
 
 	depositedABI = abi.Arguments{
-		{Name: "usdgAmount",         Type: uint256Type},
+		{Name: "usdgAmount", Type: uint256Type},
 		{Name: "basketTokensMinted", Type: uint256Type},
-		{Name: "feeUsdg",            Type: uint256Type},
+		{Name: "feeUsdg", Type: uint256Type},
 	}
 
 	redeemedABI = abi.Arguments{
 		{Name: "basketTokensBurned", Type: uint256Type},
-		{Name: "usdgReturned",       Type: uint256Type},
-		{Name: "feeUsdg",            Type: uint256Type},
+		{Name: "usdgReturned", Type: uint256Type},
+		{Name: "feeUsdg", Type: uint256Type},
 	}
 
 	// RevenueSnapshoted(uint256 indexed snapshotId, uint256 usdgAmount, uint256 totalSupply)
 	// snapshotId is Topics[1]; usdgAmount and totalSupply are in Data.
 	feeSnapshotABI = abi.Arguments{
-		{Name: "usdgAmount",  Type: uint256Type},
+		{Name: "usdgAmount", Type: uint256Type},
 		{Name: "totalSupply", Type: uint256Type},
+	}
+
+	revenueClaimedABI = abi.Arguments{
+		{Name: "usdgAmount", Type: uint256Type},
 	}
 }
 
@@ -332,10 +339,10 @@ func (idx *Indexer) syncAssets(client *ethclient.Client) {
 			elem = elem.Elem()
 		}
 
-		tokenField  := elem.FieldByName("TokenAddress")
+		tokenField := elem.FieldByName("TokenAddress")
 		oracleField := elem.FieldByName("Oracle")
 		symbolField := elem.FieldByName("Symbol")
-		nameField   := elem.FieldByName("Name")
+		nameField := elem.FieldByName("Name")
 		sectorField := elem.FieldByName("Sector")
 		activeField := elem.FieldByName("Active")
 
@@ -344,10 +351,10 @@ func (idx *Indexer) syncAssets(client *ethclient.Client) {
 			continue
 		}
 
-		token  := strings.ToLower(tokenField.Interface().(common.Address).Hex())
+		token := strings.ToLower(tokenField.Interface().(common.Address).Hex())
 		oracle := strings.ToLower(oracleField.Interface().(common.Address).Hex())
 		symbol := symbolField.String()
-		name   := nameField.String()
+		name := nameField.String()
 		sector := sectorField.String()
 		active := boolToInt(activeField.Bool())
 
@@ -421,18 +428,18 @@ func (idx *Indexer) syncBaskets(client *ethclient.Client) {
 			elem = elem.Elem()
 		}
 
-		basketField       := elem.FieldByName("Basket")
+		basketField := elem.FieldByName("Basket")
 		creatorTokenField := elem.FieldByName("CreatorToken")
-		creatorField      := elem.FieldByName("Creator")
-		activeField       := elem.FieldByName("Active")
-		createdAtField    := elem.FieldByName("CreatedAt")
+		creatorField := elem.FieldByName("Creator")
+		activeField := elem.FieldByName("Active")
+		createdAtField := elem.FieldByName("CreatedAt")
 
 		if !basketField.IsValid() || !creatorField.IsValid() || !activeField.IsValid() {
 			log.Printf("indexer: syncBaskets: element %d missing expected fields, skipping", i)
 			continue
 		}
 
-		basketCommon       := basketField.Interface().(common.Address)
+		basketCommon := basketField.Interface().(common.Address)
 		creatorTokenCommon := creatorTokenField.Interface().(common.Address)
 		suspended := 0
 		if !activeField.Bool() {
@@ -592,10 +599,10 @@ func (idx *Indexer) seedOneBasket(client *ethclient.Client, basketAddr string) e
 		return fmt.Errorf("basketState unpack: %w", err)
 	}
 
-	constituents, ok1     := unpacked[0].([]common.Address)
-	targetWeights, ok2    := unpacked[1].([]*big.Int)
+	constituents, ok1 := unpacked[0].([]common.Address)
+	targetWeights, ok2 := unpacked[1].([]*big.Int)
 	rebalancingEnabled, _ := unpacked[6].(bool)
-	driftThresholdBps, _  := unpacked[7].(*big.Int)
+	driftThresholdBps, _ := unpacked[7].(*big.Int)
 
 	if !ok1 || !ok2 || len(constituents) == 0 {
 		return fmt.Errorf("basketState: unexpected type or empty constituents")
@@ -970,11 +977,14 @@ func (idx *Indexer) writeLog(tx *sql.Tx, client *ethclient.Client, vLog types.Lo
 		}
 	}
 
-	if topic == topicFeeSnapshoted {
+	if topic == topicFeeSnapshoted || topic == topicRevenueClaimed {
 		if !idx.isKnownCreatorToken(vLog.Address, local) {
 			return nil
 		}
-		return idx.writeFeeSnapshot(tx, client, vLog, local)
+		if topic == topicFeeSnapshoted {
+			return idx.writeFeeSnapshot(tx, client, vLog, local)
+		}
+		return idx.writeRevenueClaimed(tx, client, vLog, local)
 	}
 
 	return nil
@@ -1015,11 +1025,11 @@ func (idx *Indexer) writeBasketCreated(tx *sql.Tx, client *ethclient.Client, vLo
 		return nil
 	}
 
-	basketCommon       := common.HexToAddress(vLog.Topics[1].Hex())
+	basketCommon := common.HexToAddress(vLog.Topics[1].Hex())
 	creatorTokenCommon := common.HexToAddress(vLog.Topics[2].Hex())
-	basket             := strings.ToLower(basketCommon.Hex())
-	creatorToken       := strings.ToLower(creatorTokenCommon.Hex())
-	creator            := strings.ToLower(common.HexToAddress(vLog.Topics[3].Hex()).Hex())
+	basket := strings.ToLower(basketCommon.Hex())
+	creatorToken := strings.ToLower(creatorTokenCommon.Hex())
+	creator := strings.ToLower(common.HexToAddress(vLog.Topics[3].Hex()).Hex())
 
 	decoded, err := basketCreatedABI.Unpack(vLog.Data)
 	if err != nil || len(decoded) < 6 {
@@ -1027,12 +1037,12 @@ func (idx *Indexer) writeBasketCreated(tx *sql.Tx, client *ethclient.Client, vLo
 		return nil
 	}
 
-	name, _          := decoded[0].(string)
-	symbol, _        := decoded[1].(string)
-	thesis, _        := decoded[2].(string)
-	constituents, _  := decoded[3].([]common.Address)
+	name, _ := decoded[0].(string)
+	symbol, _ := decoded[1].(string)
+	thesis, _ := decoded[2].(string)
+	constituents, _ := decoded[3].([]common.Address)
 	targetWeights, _ := decoded[4].([]*big.Int)
-	rebalancing, _   := decoded[5].(bool)
+	rebalancing, _ := decoded[5].(bool)
 
 	type constituentRow struct {
 		addr   string
@@ -1109,7 +1119,7 @@ func (idx *Indexer) handleAssetAdded(vLog types.Log) {
 	}
 
 	symbol, _ := decoded[0].(string)
-	name, _   := decoded[1].(string)
+	name, _ := decoded[1].(string)
 	sector, _ := decoded[2].(string)
 	oracle, _ := decoded[3].(common.Address)
 
@@ -1142,12 +1152,12 @@ func (idx *Indexer) writeDeposited(tx *sql.Tx, client *ethclient.Client, vLog ty
 		return fmt.Errorf("Deposited unpack tx=%s: %w", vLog.TxHash.Hex(), err)
 	}
 
-	investor     := strings.ToLower(common.HexToAddress(vLog.Topics[1].Hex()).Hex())
-	basket       := strings.ToLower(vLog.Address.Hex())
-	usdgAmount   := decoded[0].(*big.Int)
+	investor := strings.ToLower(common.HexToAddress(vLog.Topics[1].Hex()).Hex())
+	basket := strings.ToLower(vLog.Address.Hex())
+	usdgAmount := decoded[0].(*big.Int)
 	tokensMinted := decoded[1].(*big.Int)
-	feeUsdg      := decoded[2].(*big.Int)
-	ts           := idx.blockTimestamp(client, vLog.BlockNumber)
+	feeUsdg := decoded[2].(*big.Int)
+	ts := idx.blockTimestamp(client, vLog.BlockNumber)
 
 	_, err = tx.Exec(`
 		INSERT INTO deposits
@@ -1171,12 +1181,12 @@ func (idx *Indexer) writeRedeemed(tx *sql.Tx, client *ethclient.Client, vLog typ
 		return fmt.Errorf("Redeemed unpack tx=%s: %w", vLog.TxHash.Hex(), err)
 	}
 
-	investor     := strings.ToLower(common.HexToAddress(vLog.Topics[1].Hex()).Hex())
-	basket       := strings.ToLower(vLog.Address.Hex())
+	investor := strings.ToLower(common.HexToAddress(vLog.Topics[1].Hex()).Hex())
+	basket := strings.ToLower(vLog.Address.Hex())
 	tokensBurned := decoded[0].(*big.Int)
 	usdgReturned := decoded[1].(*big.Int)
-	feeUsdg      := decoded[2].(*big.Int)
-	ts           := idx.blockTimestamp(client, vLog.BlockNumber)
+	feeUsdg := decoded[2].(*big.Int)
+	ts := idx.blockTimestamp(client, vLog.BlockNumber)
 
 	_, err = tx.Exec(`
 		INSERT INTO redemptions
@@ -1196,8 +1206,8 @@ func (idx *Indexer) writeRebalanced(tx *sql.Tx, client *ethclient.Client, vLog t
 	}
 
 	triggeredBy := strings.ToLower(common.HexToAddress(vLog.Topics[1].Hex()).Hex())
-	basket      := strings.ToLower(vLog.Address.Hex())
-	ts          := idx.blockTimestamp(client, vLog.BlockNumber)
+	basket := strings.ToLower(vLog.Address.Hex())
+	ts := idx.blockTimestamp(client, vLog.BlockNumber)
 
 	_, err := tx.Exec(`
 		INSERT INTO rebalances (basket_address, triggered_by, timestamp, tx_hash, log_index)
@@ -1242,13 +1252,59 @@ func (idx *Indexer) writeFeeSnapshot(tx *sql.Tx, client *ethclient.Client, vLog 
 	}
 
 	usdgAmount := decoded[0].(*big.Int)
-	ts         := idx.blockTimestamp(client, vLog.BlockNumber)
+	ts := idx.blockTimestamp(client, vLog.BlockNumber)
 
 	_, err = tx.Exec(`
 		INSERT INTO fee_snapshots (basket_address, snapshot_id, usdg_amount, timestamp, tx_hash, log_index)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(tx_hash, log_index) DO NOTHING`,
 		basketAddr, snapshotID, usdgAmount.String(), ts, vLog.TxHash.Hex(), vLog.Index,
+	)
+	return err
+}
+
+// writeRevenueClaimed handles RevenueClaimed events emitted by CreatorToken
+// contracts.
+func (idx *Indexer) writeRevenueClaimed(tx *sql.Tx, client *ethclient.Client, vLog types.Log, local *chunkAddrs) error {
+	if len(vLog.Topics) < 3 {
+		return nil
+	}
+
+	creatorTokenCommon := vLog.Address
+	claimer := strings.ToLower(common.HexToAddress(vLog.Topics[1].Hex()).Hex())
+	snapshotID := new(big.Int).SetBytes(vLog.Topics[2].Bytes()).Int64()
+
+	idx.mu.RLock()
+	basketCommon, found := idx.creatorTokenToBasket[creatorTokenCommon]
+	idx.mu.RUnlock()
+	if !found {
+		basketCommon, found = local.creatorTokens[creatorTokenCommon]
+	}
+	if !found {
+		log.Printf("indexer: writeRevenueClaimed: no basket for creatorToken %s — skipping",
+			strings.ToLower(creatorTokenCommon.Hex()))
+		return nil
+	}
+
+	basketAddr := strings.ToLower(basketCommon.Hex())
+	creatorTokenAddr := strings.ToLower(creatorTokenCommon.Hex())
+
+	decoded, err := revenueClaimedABI.Unpack(vLog.Data)
+	if err != nil || len(decoded) < 1 {
+		return fmt.Errorf("RevenueClaimed unpack tx=%s: %w", vLog.TxHash.Hex(), err)
+	}
+
+	usdgAmount := decoded[0].(*big.Int)
+	ts := idx.blockTimestamp(client, vLog.BlockNumber)
+
+	_, err = tx.Exec(`
+        INSERT INTO revenue_claims
+            (creator_token_address, basket_address, claimer_address, snapshot_id,
+             usdg_amount, timestamp, tx_hash, log_index)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tx_hash, log_index) DO NOTHING`,
+		creatorTokenAddr, basketAddr, claimer, snapshotID,
+		usdgAmount.String(), ts, vLog.TxHash.Hex(), vLog.Index,
 	)
 	return err
 }
