@@ -128,7 +128,7 @@ type handler struct {
 	db          *db.DB
 	openAIKey   string
 	openAIModel string
-	rpcClient *ethclient.Client
+	rpcClient   *ethclient.Client
 }
 
 // Marketplace
@@ -316,72 +316,71 @@ func (h *handler) getBasket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("api: getBasketStateFromCache(%s): %v", addr, err)
 	}
 
-	// Performance history
-	var perf []struct {
-		NavPerToken    string `json:"navPerToken"`
-		TotalValueUsdg string `json:"totalValueUsdg"`
-		Timestamp      int64  `json:"timestamp"`
-	}
-	perf = []struct {
-		NavPerToken    string `json:"navPerToken"`
-		TotalValueUsdg string `json:"totalValueUsdg"`
-		Timestamp      int64  `json:"timestamp"`
-	}{}
-	if perfRows, err := h.db.Query(`
-		SELECT nav_per_token, total_value_usdg, timestamp
-		FROM nav_history WHERE basket_address = ?
-		ORDER BY timestamp ASC`, addr); err == nil {
-		defer perfRows.Close()
-		for perfRows.Next() {
-			var p struct {
-				NavPerToken    string `json:"navPerToken"`
-				TotalValueUsdg string `json:"totalValueUsdg"`
-				Timestamp      int64  `json:"timestamp"`
-			}
-			if perfRows.Scan(&p.NavPerToken, &p.TotalValueUsdg, &p.Timestamp) == nil {
-				perf = append(perf, p)
-			}
-		}
-	}
-
-	// Rebalance history.
-	type RebalanceEntry struct {
-		Timestamp   int64  `json:"timestamp"`
-		TxHash      string `json:"txHash"`
-		TriggeredBy string `json:"triggeredBy"`
-	}
+	// Performance history, rebalance history, deposit history, and redemption history.
+	perf := []PerfEntry{}
 	rebalHistory := []RebalanceEntry{}
-	if rebRows, err := h.db.Query(`
-		SELECT timestamp, tx_hash, triggered_by FROM rebalances
-		WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 50`, addr); err == nil {
-		defer rebRows.Close()
-		for rebRows.Next() {
-			var e RebalanceEntry
-			if rebRows.Scan(&e.Timestamp, &e.TxHash, &e.TriggeredBy) == nil {
-				rebalHistory = append(rebalHistory, e)
-			}
-		}
-	}
-
-	// Deposit history.
-	type DepositEntry struct {
-		Investor           string `json:"investor"`
-		UsdgAmount         string `json:"usdgAmount"`
-		BasketTokensMinted string `json:"basketTokensMinted"`
-		Timestamp          int64  `json:"timestamp"`
-		TxHash             string `json:"txHash"`
-	}
 	depHistory := []DepositEntry{}
-	if depRows, err := h.db.Query(`
-		SELECT investor_address, usdg_amount, basket_tokens_minted, timestamp, tx_hash
-		FROM deposits WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 50`, addr); err == nil {
-		defer depRows.Close()
-		for depRows.Next() {
-			var e DepositEntry
-			if depRows.Scan(&e.Investor, &e.UsdgAmount, &e.BasketTokensMinted, &e.Timestamp, &e.TxHash) == nil {
-				depHistory = append(depHistory, e)
+	redemptHistory := []RedemptionEntry{}
+
+	readTx, err := h.db.Begin()
+	if err != nil {
+		log.Printf("api: getBasket begin read tx: %v", err)
+	} else {
+		// Performance history.
+		if perfRows, err := readTx.Query(`
+			SELECT nav_per_token, total_value_usdg, timestamp
+			FROM nav_history WHERE basket_address = ?
+			ORDER BY timestamp ASC`, addr); err == nil {
+			defer perfRows.Close()
+			for perfRows.Next() {
+				var p PerfEntry
+				if perfRows.Scan(&p.NavPerToken, &p.TotalValueUsdg, &p.Timestamp) == nil {
+					perf = append(perf, p)
+				}
 			}
 		}
+
+		// Rebalance history.
+		if rebRows, err := readTx.Query(`
+			SELECT timestamp, tx_hash, triggered_by FROM rebalances
+			WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 50`, addr); err == nil {
+			defer rebRows.Close()
+			for rebRows.Next() {
+				var e RebalanceEntry
+				if rebRows.Scan(&e.Timestamp, &e.TxHash, &e.TriggeredBy) == nil {
+					rebalHistory = append(rebalHistory, e)
+				}
+			}
+		}
+
+		// Deposit history.
+		if depRows, err := readTx.Query(`
+			SELECT investor_address, usdg_amount, basket_tokens_minted, timestamp, tx_hash
+			FROM deposits WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 50`, addr); err == nil {
+			defer depRows.Close()
+			for depRows.Next() {
+				var e DepositEntry
+				if depRows.Scan(&e.Investor, &e.UsdgAmount, &e.BasketTokensMinted, &e.Timestamp, &e.TxHash) == nil {
+					depHistory = append(depHistory, e)
+				}
+			}
+		}
+
+		// Redemption history.
+		if redRows, err := readTx.Query(`
+			SELECT investor_address, usdg_returned, basket_tokens_burned, timestamp, tx_hash
+			FROM redemptions WHERE basket_address = ? ORDER BY timestamp DESC LIMIT 50`, addr); err == nil {
+			defer redRows.Close()
+			for redRows.Next() {
+				var e RedemptionEntry
+				if redRows.Scan(&e.Investor, &e.UsdgReturned, &e.BasketTokensBurned, &e.Timestamp, &e.TxHash) == nil {
+					redemptHistory = append(redemptHistory, e)
+				}
+			}
+		}
+
+		// Read-only transaction — rollback is a no-op but correct.
+		readTx.Rollback()
 	}
 
 	navPerToken := "0"
@@ -437,7 +436,33 @@ func (h *handler) getBasket(w http.ResponseWriter, r *http.Request) {
 		PerformanceHistory: perf,
 		RebalanceHistory:   rebalHistory,
 		DepositHistory:     depHistory,
+		RedemptionHistory:  redemptHistory,
 	})
+}
+
+type PerfEntry struct {
+	NavPerToken    string `json:"navPerToken"`
+	TotalValueUsdg string `json:"totalValueUsdg"`
+	Timestamp      int64  `json:"timestamp"`
+}
+type RebalanceEntry struct {
+	Timestamp   int64  `json:"timestamp"`
+	TxHash      string `json:"txHash"`
+	TriggeredBy string `json:"triggeredBy"`
+}
+type DepositEntry struct {
+	Investor           string `json:"investor"`
+	UsdgAmount         string `json:"usdgAmount"`
+	BasketTokensMinted string `json:"basketTokensMinted"`
+	Timestamp          int64  `json:"timestamp"`
+	TxHash             string `json:"txHash"`
+}
+type RedemptionEntry struct {
+	Investor           string `json:"investor"`
+	UsdgReturned       string `json:"usdgReturned"`
+	BasketTokensBurned string `json:"basketTokensBurned"`
+	Timestamp          int64  `json:"timestamp"`
+	TxHash             string `json:"txHash"`
 }
 
 type BasketDetailResponse struct {
@@ -462,6 +487,7 @@ type BasketDetailResponse struct {
 	PerformanceHistory any             `json:"performanceHistory"`
 	RebalanceHistory   any             `json:"rebalanceHistory"`
 	DepositHistory     any             `json:"depositHistory"`
+	RedemptionHistory  any             `json:"redemptionHistory"`
 }
 
 // basketStateCache is the shape stored in and read from basket_state_cache.
@@ -1298,6 +1324,15 @@ type BasketEntry struct {
 	TotalClaimableUsdg string          `json:"totalClaimableUsdg"`
 	UnclaimedSnapshots []snapshotEntry `json:"unclaimedSnapshots"`
 	RevenueHistory     []snapshotEntry `json:"revenueHistory"`
+	ClaimHistory       []ClaimEntry    `json:"claimHistory"`
+}
+
+type ClaimEntry struct {
+	Claimer    string `json:"claimer"`
+	SnapshotID int64  `json:"snapshotId"`
+	UsdgAmount string `json:"usdgAmount"`
+	Timestamp  int64  `json:"timestamp"`
+	TxHash     string `json:"txHash"`
 }
 
 func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
@@ -1378,6 +1413,25 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	claimsByBasket := make(map[string][]ClaimEntry)
+	claimRows, err := h.db.Query(
+		`SELECT basket_address, claimer_address, snapshot_id, usdg_amount, timestamp, tx_hash
+     FROM revenue_claims
+     WHERE basket_address IN (`+strings.Join(placeholders, ",")+`)
+     ORDER BY basket_address, timestamp DESC`,
+		args...,
+	)
+	if err == nil {
+		defer claimRows.Close()
+		for claimRows.Next() {
+			var bAddr string
+			var c ClaimEntry
+			if claimRows.Scan(&bAddr, &c.Claimer, &c.SnapshotID, &c.UsdgAmount, &c.Timestamp, &c.TxHash) == nil {
+				claimsByBasket[bAddr] = append(claimsByBasket[bAddr], c)
+			}
+		}
+	}
+
 	totalClaimable := new(big.Int)
 	result := make([]BasketEntry, 0, len(basketOrder))
 
@@ -1398,6 +1452,11 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		totalClaimable.Add(totalClaimable, basketClaimable)
 
+		claims := claimsByBasket[addr]
+		if claims == nil {
+			claims = []ClaimEntry{}
+		}
+
 		result = append(result, BasketEntry{
 			BasketAddress:      addr,
 			BasketName:         m.name,
@@ -1407,6 +1466,7 @@ func (h *handler) getCreatorDashboard(w http.ResponseWriter, r *http.Request) {
 			TotalClaimableUsdg: basketClaimable.String(),
 			UnclaimedSnapshots: unclaimed,
 			RevenueHistory:     snaps,
+			ClaimHistory:       claims,
 		})
 	}
 

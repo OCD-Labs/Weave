@@ -139,3 +139,20 @@ CREATE INDEX IF NOT EXISTS idx_nav_history_basket   ON nav_history(basket_addres
 CREATE INDEX IF NOT EXISTS idx_fee_snapshots_basket ON fee_snapshots(basket_address);
 CREATE INDEX IF NOT EXISTS idx_basket_state_cache   ON basket_state_cache(cached_at);
 CREATE INDEX IF NOT EXISTS idx_creator_claimable    ON creator_claimable_cache(wallet_address, cached_at);
+
+CREATE TABLE IF NOT EXISTS revenue_claims (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    creator_token_address TEXT NOT NULL,
+    basket_address        TEXT NOT NULL,
+    claimer_address       TEXT NOT NULL,
+    snapshot_id           INTEGER NOT NULL,
+    usdg_amount           TEXT NOT NULL,
+    timestamp             INTEGER NOT NULL,
+    tx_hash               TEXT NOT NULL,
+    log_index             INTEGER NOT NULL,
+    UNIQUE(tx_hash, log_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_revenue_claims_basket   ON revenue_claims(basket_address);
+CREATE INDEX IF NOT EXISTS idx_revenue_claims_claimer  ON revenue_claims(claimer_address);
+CREATE INDEX IF NOT EXISTS idx_revenue_claims_ct       ON revenue_claims(creator_token_address);
