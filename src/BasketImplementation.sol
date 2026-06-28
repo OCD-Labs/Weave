@@ -399,18 +399,23 @@ contract BasketImplementation is IBasket, ERC20, ReentrancyGuard {
         if (!rebalancingEnabled || suspended) return false;
         IWeaveRegistry reg  = IWeaveRegistry(registry);
         uint256 totalValue  = _totalValueUsdg(reg);
+        uint256 minTradeSize = reg.minRebalanceTradeSizeUsdg();
         uint256 len         = _constituents.length;
 
         for (uint256 i = 0; i < len; ++i) {
             (uint256 price, ) = reg.getAssetPrice(_constituents[i]);
             uint256 currentValue     = Math.mulDiv(_constituentBalances[i], price, PRICE_SCALE);
+            uint256 targetValue      = Math.mulDiv(totalValue, _targetWeightsBps[i], 10_000);
             uint256 currentWeightBps = totalValue > 0
                 ? Math.mulDiv(currentValue, 10_000, totalValue)
                 : 0;
             uint256 drift = currentWeightBps > _targetWeightsBps[i]
                 ? currentWeightBps - _targetWeightsBps[i]
                 : _targetWeightsBps[i] - currentWeightBps;
-            if (drift >= driftThresholdBps) return true;
+            uint256 delta = currentValue > targetValue
+                ? currentValue - targetValue
+                : targetValue - currentValue;
+            if (drift >= driftThresholdBps && delta >= minTradeSize) return true;
         }
 
         return false;
